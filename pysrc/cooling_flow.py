@@ -664,6 +664,7 @@ class IntegrationResult(CGMsolution):
     """
     class for accessing the integration results
     """
+    T_floor = 1e4
     eventNames = 'sonic point','unbound','lowT','max R reached'    
     def __init__(self, res, Mdot, potential, cooling, T0factor=None,tflow2tcool0=None,isInward=False):
         self.res, self.Mdot, self.T0factor,self.tflow2tcool0,self.isInward,self.potential,self.cooling = (
@@ -695,6 +696,7 @@ class IntegrationResult(CGMsolution):
         if self.inward_sonic_res !=None:
             Ts_sonic_inward = e**self.inward_sonic_res.y[0,:][::-1]
             Ts = np.concatenate([Ts_sonic_inward,Ts])        
+        Ts = Ts + (Ts<self.T_floor)*self.T_floor
         return Ts*un.K
     def stopReason(self):
         """the reason the integration stopped"""
