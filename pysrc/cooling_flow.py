@@ -646,7 +646,7 @@ class CGMsolution(object):
         return (A*self.nHs()*self.Ts()).to('cm**-1')
     def t_flows(self):
         """flow times (r/v) of the solution at all radii"""
-        return (self.Rs()/self.vr()).to('Gyr')
+        return (self.Rs()/self.vrs()).to('Gyr')
     def t_cools(self):
         """cooling times of the solution at all radii"""
         return ((gamma*(gamma-1))**-1. * 
