@@ -109,7 +109,7 @@ class NFW(CF.Potential):
         Ms = self.enclosedMass(r)
         return ((cons.G*Ms / r)**0.5).to('km/s')
     def dlnvc_dlnR(self, r):
-        return (ln(1+r/self.r_scale())*(self.r_scale()/r + 1.)**2 - (self.r_scale()/r + 1.))**-1.
+        return 0.5*((ln(1+r/self.r_scale())*(self.r_scale()/r + 1.)**2 - (self.r_scale()/r + 1.))**-1. - 1)
     def mean_enclosed_rho2rhocrit(self,r):
         Ms = self.enclosedMass(r)
         return Ms / (4/3.*pi*r**3) / cosmo.critical_density(self.z)
