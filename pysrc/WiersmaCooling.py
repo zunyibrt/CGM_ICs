@@ -21,7 +21,7 @@ class Constant_Cooling(CF.Cooling):
     def f_dlnLambda_dlnrho(self,T,nH):
         """logarithmic derivative of cooling function with respect to rho"""
         return 0
-    
+              
 class Wiersma_Cooling(CF.Cooling):
     """
     creates Wiersma+09 cooling function for given metallicity and redshift
@@ -67,9 +67,6 @@ class Wiersma_Cooling(CF.Cooling):
         """logarithmic derivative of cooling function with respect to rho"""
         return self.dlnLambda_dlnrho_interpolation((log(T.to('K').value), log(nH.to('cm**-3').value)))
     
-
-
-
 class Kartick_Cooling(CF.Cooling):
     table_path = '../cooling/Kartick_CIE_cooling.table'
     def __init__(self):
@@ -91,7 +88,6 @@ class Kartick_Cooling(CF.Cooling):
         """logarithmic derivative of cooling function with respect to rho"""
         return 0.
     
-
 class DopitaSutherland_CIE(CF.Cooling):
     table_path = '../cooling/DopitaSutherland_CIE.dat'
     def __init__(self,Z2Zsun):
@@ -117,10 +113,7 @@ class DopitaSutherland_CIE(CF.Cooling):
     def f_dlnLambda_dlnrho(self, T, nH):
         """logarithmic derivative of cooling function with respect to rho"""
         return 0.
-    
 
-        
-        
 def searchsortedclosest(arr, val):
     if arr[0]<arr[1]:
         ind = np.searchsorted(arr,val)
