@@ -36,7 +36,7 @@ class Wiersma_Cooling(CF.Cooling):
         He2Habundance = 10**-1.07 * (0.71553 + 0.28447*Z2Zsun) #Asplund+09, Groves+04
         X = (1 - 0.014*Z2Zsun) / (1.+4.*He2Habundance)
         Y = 4.*He2Habundance * X
-        iHe = searchsortedclosest(f['Metal_free']['Helium_mass_fraction_bins'][:],Y)
+        iHe = 1  # searchsortedclosest(f['Metal_free']['Helium_mass_fraction_bins'][:],Y)
         
         H_He_Cooling  = f['Metal_free']['Net_Cooling'][iHe,...]
         Tbins         = f['Metal_free']['Temperature_bins'][...]
@@ -45,6 +45,7 @@ class Wiersma_Cooling(CF.Cooling):
         
         self.f_Cooling = interpolate.RegularGridInterpolator((log(Tbins), log(nHbins)),
                                                         Metal_Cooling+H_He_Cooling, 
+                                                        # Metal_Cooling,
                                                         bounds_error=False, fill_value=None)
         #### calculate gradients of cooling function
         X, Y = np.meshgrid(Tbins, nHbins, copy=False)

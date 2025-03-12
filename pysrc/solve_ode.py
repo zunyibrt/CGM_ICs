@@ -306,7 +306,7 @@ class CGMSolution:
         mach_crossings = np.where(np.diff(np.signbit(self.Ms - 1)))[0]
         if len(mach_crossings) > 0:
             return self.Rs[mach_crossings[0]]
-        return None
+        return None    
         
 ########## Top Level Shooting Functions. ##########
 def shoot_from_R_sonic(

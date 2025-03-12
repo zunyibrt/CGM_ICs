@@ -198,7 +198,7 @@ class OuterHaloPotential:
         """
         term1 = (4 / 3) * (5 * self.R200) ** 1.5 * r ** 0.5
         term2 = (1 / 6) * r ** 2
-        return -4 * np.pi * cons.G * self.rho_mean * (term1 + term2)
+        return 4 * np.pi * cons.G * self.rho_mean * (term1 + term2)
     
     def dlnvc_dlnR(self, r):
         """
@@ -307,7 +307,7 @@ class CombinedPotential:
         phi_Plummer = -cons.G * self.M_gal / np.sqrt(r**2 + self.a_gal**2)
         term1 = (4 / 3) * (5 * self.R200) ** 1.5 * r ** 0.5
         term2 = (1 / 6) * r ** 2
-        phi_Outer = -4 * np.pi * cons.G * self.rho_mean * (term1 + term2)
+        phi_Outer = 4 * np.pi * cons.G * self.rho_mean * (term1 + term2)
         phi = phi_NFW + phi_Plummer + phi_Outer
         return phi.to('km**2/s**2')
     
