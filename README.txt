@@ -10,9 +10,9 @@ where v_c is circular velocity, R is cylindrical radius, theta is polar angle an
 
 Files:
 ipynb/steady_state_integration_example.ipynb    Examples how to integrate steady-state solution
-pysrc/cooling_flow.py				Main module for integration of flow equations. 
-pysrc/WiersmaCooling.py				Wraps the Wiersma et al. (2009) cooling functions
-pysrc/HaloPotential.py 				Creates the gravity potential used in the paper. Includes an NFW halo, a central galaxy with mass based on the Behroozi et al. (2018) stellar-mass halo-mass relation, and an external component following Diemer & Kravtsov (2014). 
-cooling/					Hdf5 files for the Wiersma+09 cooling tables
+pysrc/cooling_flow.py			            	Main module for integration of flow equations. 
+pysrc/WiersmaCooling.py			             	Wraps the Wiersma et al. (2009) cooling functions
+pysrc/HaloPotential.py 			            	Creates the gravity potential used in the paper. Includes an NFW halo, a central galaxy with mass based on the Behroozi et al. (2018) stellar-mass halo-mass relation, and an external component following Diemer & Kravtsov (2014). 
+cooling/				                    	Hdf5 files for the Wiersma+09 cooling tables
 
 

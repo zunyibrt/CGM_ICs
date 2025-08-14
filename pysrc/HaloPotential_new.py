@@ -83,7 +83,7 @@ class NFWPotential(CF.Potential):
         denominator = (1 + x)**2 * (np.log(1 + x) - x / (1 + x))
         return 0.5 * (x**2 / denominator - 1)
 
-class PlummerPotential:
+class PlummerPotential(CF.Potential):
     def __init__(self, M, a):
         """
         Initialize the Plummer potential.
@@ -146,7 +146,7 @@ class PlummerPotential:
         """
         return 0.5 * (3 * self.a**2 / (r**2 + self.a**2) - 1)
 
-class OuterHaloPotential:
+class OuterHaloPotential(CF.Potential):
     def __init__(self, rho_mean, R200):
         """
         Initialize an outer halo potential from DK14.
@@ -213,7 +213,7 @@ class OuterHaloPotential:
         x = r / (5 * self.R200)
         return 0.5 * (x**-1.5 + 2) / (2 * x**-1.5 + 1)
 
-class CombinedPotential:
+class CombinedPotential(CF.Potential):
     def __init__(self,  M_vir, r_vir, c_vir, M_gal, a_gal, rho_mean, R200):
         """
         Initialize a combined potential with an NFW profile and a Plummer sphere.
@@ -348,6 +348,34 @@ class CombinedPotential:
         
         return 0.5 * (total_derivative * r / total_mass - 1)
 
+class MiyamotoNagaiPotential:
+    def __init__(self, M, a, b):
+        """
+        Initialize the Miyamoto-Nagai potential.
+
+        Parameters:
+        M (float): Total stellar disk mass.
+        a (float): Stellar scale radius.
+        b (float): Stellar scale height.
+        """
+        self.M = M
+        self.a = a
+        self.b = b
+
+    def Phi(self, R, z):
+        """
+        Compute the gravitational potential at cylindrical radius r and height z.
+
+        Parameters:
+        R (float or np.ndarray): Cylindrical radius.
+        z (float or np.ndarray): Height.
+
+        Returns:
+        float or np.ndarray: Gravitational potential (in km^2/s^2).
+        """
+        phi = -cons.G * self.M / np.sqrt(R**2 + (np.sqrt(z**2 + self.b**2) + self.a)**2)
+        return phi.to('km**2/s**2')
+    
 # Example usage
 if __name__ == "__main__":
     M_vir = 1e12 * un.Msun # Virial mass
