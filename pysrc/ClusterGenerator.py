@@ -338,7 +338,7 @@ class ClusterVisualizer:
             bin_edges, params.n_clusters, params.alpha
         )
         ax.plot(bin_centers, expected, '#228b22', linewidth=3,
-               linestyle=':', label=f'n ∝ m⁻{params.alpha:.1f}', alpha=0.9)
+               linestyle=':', label=f'n ∝ m$^{{-{params.alpha:.1f}}}$', alpha=0.9)
         
         # Add statistics cards
         self._add_stat_cards(ax, stats, colors)
