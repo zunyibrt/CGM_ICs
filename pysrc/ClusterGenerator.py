@@ -449,9 +449,9 @@ class StarClusterGenerator:
         Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
             vx, vy, vz velocity components and velocity magnitude
         """
-        # Calculate velocity magnitude at fixed height (10 kpc)
-        # Assumes combined.vc and cu_velocity are defined elsewhere in the code
-        v_mag = 1.0 #(combined.vc(10*un.kpc)/cu_velocity).to('')
+        # Calculate velocity magnitude at fixed height (10 kpc).
+        # The caller is expected to normalize this against its chosen velocity unit.
+        v_mag = 1.0
         
         # For counterclockwise motion: v_tangential = (-y, x) / r * v_mag
         # Avoid division by zero for clusters at the center

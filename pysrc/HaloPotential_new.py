@@ -1,535 +1,559 @@
-"""
-Implementation of an NFW + Plummer + Outer Halo Potential
-All inputs are exepcted to come with (the right) dimensional units
-"""
+"""Float-native halo and galaxy potentials for the CGM workflow."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
-from astropy import units as un, constants as cons
-import cooling_flow as CF
+import scipy.optimize
 
-class NFWPotential(CF.Potential):
-    def __init__(self, M_vir, r_vir, c_vir):
-        """
-        Initialize the NFW potential.
+import numpy_compat  # noqa: F401
+import unit_system as us
+from analytic_models import HaloConfig
+from cosmology import DEFAULT_COSMOLOGY, Cosmology
 
-        Parameters:
-        M_vir (float): Virial mass of the halo.
-        c_vir (float): Concentration parameter.
-        """
-        self.M_vir = M_vir
-        self.c_vir = c_vir
 
-        # Compute the virial radius (in meters)
-        self.r_vir = r_vir
+def _radius_array(radius_kpc):
+    return np.clip(np.asarray(radius_kpc, dtype=float), 1e-12, None)
 
-        # Scale radius
-        self.r_s = self.r_vir / c_vir
 
-        # Characteristic density
-        self.rho_s = M_vir / (4 * np.pi * self.r_s**3 * (np.log(1 + c_vir) - c_vir / (1 + c_vir)))
+class PowerLaw:
+    def __init__(self, m: float, vc_Rvir_kms: float, Rvir_kpc: float, R_phi0_kpc: float | None = None):
+        self.m = float(m)
+        self.vc_Rvir_kms = float(vc_Rvir_kms)
+        self.Rvir_kpc = float(Rvir_kpc)
+        self.R_phi0_kpc = 100.0 * self.Rvir_kpc if R_phi0_kpc is None else float(R_phi0_kpc)
 
-    def enclosed_mass(self, r):
-        """
-        Calculate the enclosed mass at radius r.
+    def vc_kms(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return self.vc_Rvir_kms * (radius / self.Rvir_kpc) ** self.m
 
-        Parameters:
-        r (float or np.ndarray): Radius from the center.
+    def phi_kms2(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        if self.m != 0.0:
+            return -self.vc_Rvir_kms**2 / (2.0 * self.m) * (
+                (self.R_phi0_kpc / self.Rvir_kpc) ** (2.0 * self.m) - (radius / self.Rvir_kpc) ** (2.0 * self.m)
+            )
+        return -self.vc_Rvir_kms**2 * np.log(self.R_phi0_kpc / radius)
 
-        Returns:
-        float or np.ndarray: Enclosed mass (in Solar Masses).
-        """
-        x = r / self.r_s
-        mass = 4 * np.pi * self.rho_s * self.r_s**3 * (np.log(1 + x) - x / (1 + x))
-        return mass.to('Msun')
+    def dln_vc_dln_r(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return np.zeros_like(radius) + self.m
 
-    def vc(self, r):
-        """
-        Calculate the circular velocity at radius r.
 
-        Parameters:
-        r (float or np.ndarray): Radius from the center.
+class Polynom:
+    def __init__(self, coeffs, Rvir_kpc: float, R_phi0_kpc: float | None = None):
+        self.coeffs = np.asarray(coeffs, dtype=float)
+        self.Rvir_kpc = float(Rvir_kpc)
+        self.R_phi0_kpc = 100.0 * self.Rvir_kpc if R_phi0_kpc is None else float(R_phi0_kpc)
 
-        Returns:
-        float or np.ndarray: Circular velocity (in km/s).
-        """
-        vel = np.sqrt(cons.G * self.enclosed_mass(r) / r)
-        return vel.to('km/s')
+    def vc_kms(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        log_ratio = np.log10(radius / self.Rvir_kpc)
+        powers = np.array([coefficient * log_ratio**index for index, coefficient in enumerate(self.coeffs)])
+        return 10.0 ** powers.sum(axis=0)
 
-    def Phi(self, r):
-        """
-        Calculate the gravitational potential at radius r.
+    def phi_kms2(self, radius_kpc):
+        radii = _radius_array(radius_kpc)
+        scalar_input = radii.shape == ()
+        radii_1d = np.atleast_1d(radii)
+        phi = np.empty_like(radii_1d, dtype=float)
+        for index, radius in enumerate(radii_1d):
+            grid = np.geomspace(radius, self.R_phi0_kpc, 512)
+            integrand = self.vc_kms(grid) ** 2 / grid
+            phi[index] = -np.trapezoid(integrand, grid)
+        if scalar_input:
+            return float(phi[0])
+        return phi
 
-        Parameters:
-        r (float or np.ndarray): Radius from the center.
+    def dln_vc_dln_r(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        log_ratio = np.log10(radius / self.Rvir_kpc)
+        terms = [
+            index * coefficient * log_ratio ** (index - 1)
+            for index, coefficient in enumerate(self.coeffs)
+            if index > 0
+        ]
+        if not terms:
+            return np.zeros_like(radius)
+        return np.sum(np.asarray(terms), axis=0)
 
-        Returns:
-        float or np.ndarray: Gravitational potential (in km^2/s^2).
-        """
-        x = r / self.r_s
-        phi = -4 * np.pi * cons.G * self.rho_s * self.r_s**2 * np.log(1 + x) / x
-        return phi.to('km**2/s**2')
 
-    def dlnvc_dlnR(self, r):
-        """
-        Calculate d(ln(circular velocity))/d(ln(r)) at radius r.
+class PowerLaw_with_AngularMomentum(PowerLaw):
+    def __init__(self, m: float, vc_Rvir_kms: float, Rvir_kpc: float, Rcirc_kpc: float, R_phi0_kpc: float | None = None):
+        super().__init__(m=m, vc_Rvir_kms=vc_Rvir_kms, Rvir_kpc=Rvir_kpc, R_phi0_kpc=R_phi0_kpc)
+        self.Rcirc_kpc = float(Rcirc_kpc)
 
-        Parameters:
-        r (float or np.ndarray): Radius from the center.
+    def vc_kms(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        base = super().vc_kms(radius)
+        return base * np.sqrt(np.clip(1.0 - (self.Rcirc_kpc / radius) ** 2, 0.0, None))
 
-        Returns:
-        float or np.ndarray: The logarithmic derivative of circular velocity with respect to radius.
-        """
-        x = r / self.r_s
-        denominator = (1 + x)**2 * (np.log(1 + x) - x / (1 + x))
-        return 0.5 * (x**2 / denominator - 1)
+    def dln_vc_dln_r(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        correction = np.where(
+            radius > self.Rcirc_kpc,
+            1.0 / ((radius / self.Rcirc_kpc) ** 2 - 1.0),
+            0.0,
+        )
+        return super().dln_vc_dln_r(radius) + correction
 
-class PlummerPotential(CF.Potential):
-    def __init__(self, M, a):
-        """
-        Initialize the Plummer potential.
 
-        Parameters:
-        M (float): Total mass of the Plummer sphere.
-        a (float): Plummer scale radius.
-        """
-        self.M = M
-        self.a = a
+@dataclass(frozen=True)
+class _NFWProfile:
+    M_vir_Msun: float
+    r_vir_kpc: float
+    c_vir: float
 
-    def enclosed_mass(self, r):
-        """
-        Compute the enclosed mass at radius r.
+    @property
+    def r_s_kpc(self) -> float:
+        return self.r_vir_kpc / self.c_vir
 
-        Parameters:
-        r (float or np.ndarray): Radius.
+    @property
+    def norm(self) -> float:
+        return np.log(1.0 + self.c_vir) - self.c_vir / (1.0 + self.c_vir)
 
-        Returns:
-        float or np.ndarray: Enclosed mass (in Solar Masses).
-        """
-        mass = self.M * (r**3 / (r**2 + self.a**2)**(3/2))
-        return mass.to('Msun')
+    @property
+    def rho_s_Msun_kpc3(self) -> float:
+        return self.M_vir_Msun / (4.0 * np.pi * self.r_s_kpc**3 * self.norm)
 
-    def vc(self, r):
-        """
-        Compute the circular velocity at radius r.
+    def enclosed_mass_Msun(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        x = radius / self.r_s_kpc
+        return 4.0 * np.pi * self.rho_s_Msun_kpc3 * self.r_s_kpc**3 * (
+            np.log(1.0 + x) - x / (1.0 + x)
+        )
 
-        Parameters:
-        r (float or np.ndarray): Radius.
+    def phi_kms2(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        x = radius / self.r_s_kpc
+        return (
+            -4.0
+            * np.pi
+            * us.G_KPC_KM2_S2_PER_MSUN
+            * self.rho_s_Msun_kpc3
+            * self.r_s_kpc**2
+            * np.log(1.0 + x)
+            / x
+        )
 
-        Returns:
-        float or np.ndarray: Circular velocity (in km/s).
-        """
-        vel = np.sqrt(cons.G * self.enclosed_mass(r) / r)
-        return vel.to('km/s')
+    def dM_dr_Msun_per_kpc(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        x = radius / self.r_s_kpc
+        return 4.0 * np.pi * self.rho_s_Msun_kpc3 * self.r_s_kpc**2 * x / (1.0 + x) ** 2
 
-    def Phi(self, r):
-        """
-        Compute the gravitational potential at radius r.
 
-        Parameters:
-        r (float or np.ndarray): Radius.
+class NFWPotential:
+    def __init__(self, M_vir_Msun: float, r_vir_kpc: float, c_vir: float):
+        self.M_vir_Msun = float(M_vir_Msun)
+        self.r_vir_kpc = float(r_vir_kpc)
+        self.c_vir = float(c_vir)
+        self._profile = _NFWProfile(self.M_vir_Msun, self.r_vir_kpc, self.c_vir)
 
-        Returns:
-        float or np.ndarray: Gravitational potential (in km^2/s^2).
-        """
-        phi = -cons.G * self.M / np.sqrt(r**2 + self.a**2)
-        return phi.to('km**2/s**2')
+    def enclosed_mass_Msun(self, radius_kpc):
+        return self._profile.enclosed_mass_Msun(radius_kpc)
 
-    def dlnvc_dlnR(self, r):
-        """
-        Compute d(ln(v_c))/d(ln(r)) at radius r.
+    def vc_kms(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return np.sqrt(us.G_KPC_KM2_S2_PER_MSUN * self.enclosed_mass_Msun(radius) / radius)
 
-        Parameters:
-        r (float or np.ndarray): Radius.
+    def phi_kms2(self, radius_kpc):
+        return self._profile.phi_kms2(radius_kpc)
 
-        Returns:
-        float or np.ndarray: Logarithmic derivative of circular velocity with respect to radius.
-        """
-        return 0.5 * (3 * self.a**2 / (r**2 + self.a**2) - 1)
+    def dln_vc_dln_r(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        x = radius / self._profile.r_s_kpc
+        denominator = (1.0 + x) ** 2 * (np.log(1.0 + x) - x / (1.0 + x))
+        return 0.5 * (x**2 / denominator - 1.0)
 
-class OuterHaloPotential(CF.Potential):
-    def __init__(self, rho_mean, R200):
-        """
-        Initialize an outer halo potential from DK14.
 
-        Parameters:
-        rho_mean (float): Mean density of the universe.
-        R200 (float): Radius corresponding to R200m.
-        """
-        self.rho_mean = rho_mean
-        self.R200 = R200
-    
-    def enclosed_mass(self, r):
-        """
-        Compute the enclosed mass at radius r.
+class NFW:
+    mu = 0.6
+    X = 0.75
 
-        Parameters:
-        r (float or np.ndarray): Radius.
+    def __init__(self, Mvir_Msun: float, z: float, cvir: float, cosmology: Cosmology = DEFAULT_COSMOLOGY):
+        self.Mvir_Msun = float(Mvir_Msun)
+        self.z = float(z)
+        self.cvir = float(cvir)
+        self.cosmology = cosmology
+        self._rvir_kpc = cosmology.virial_radius_kpc(self.Mvir_Msun, z=self.z)
+        self._rscale_kpc = self._rvir_kpc / self.cvir
+        self._norm = np.log(1.0 + self.cvir) - self.cvir / (1.0 + self.cvir)
+        self.rho_scale_Msun_kpc3 = self.Mvir_Msun / (4.0 * np.pi * self._rscale_kpc**3 * self._norm)
+        self.rho_scale_cgs = self.rho_scale_Msun_kpc3 * us.MSUN_TO_G / us.KPC_TO_CM**3
 
-        Returns:
-        float or np.ndarray: Enclosed mass (in Solar Masses).
-        """
-        term1 = (5 * self.R200) ** 1.5 * (2 / 3) * r ** 1.5
-        term2 = (1 / 3) * r ** 3
-        mass =  4 * np.pi * self.rho_mean * (term1 + term2)
-        return mass.to('Msun')
+    def delta_c_vir(self):
+        return self.cosmology.delta_c_vir(self.z)
 
-    def vc(self, r):
-        """
-        Compute the circular velocity at radius r.
+    def rvir_kpc(self):
+        return self._rvir_kpc
 
-        Parameters:
-        r (float or np.ndarray): Radius.
+    def r_ta_kpc(self, use200m: bool = False):
+        return 2.0 * (self.r200m_kpc() if use200m else self.rvir_kpc())
 
-        Returns:
-        float or np.ndarray: Circular velocity (in km/s).
-        """
-        vel = np.sqrt(cons.G * self.enclosed_mass(r) / r)
-        return vel.to('km/s')
-    
-    def Phi(self, r):
-        """
-        Compute the gravitational potential at radius r.
+    def r_scale_kpc(self):
+        return self._rscale_kpc
 
-        Parameters:
-        r (float or np.ndarray): Radius.
+    def rho2rho_scale(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        x = radius / self._rscale_kpc
+        return 1.0 / (x * (1.0 + x) ** 2)
 
-        Returns:
-        float or np.ndarray: Gravitational potential (in km^2/s^2).
-        """
-        term1 = (4 / 3) * (5 * self.R200) ** 1.5 * r ** 0.5
-        term2 = (1 / 6) * r ** 2
-        return 4 * np.pi * cons.G * self.rho_mean * (term1 + term2)
-    
-    def dlnvc_dlnR(self, r):
-        """
-        Compute d(ln(v_c))/d(ln(r)) at radius r.
+    def rho_cgs(self, radius_kpc):
+        return self.rho_scale_cgs * self.rho2rho_scale(radius_kpc)
 
-        Parameters:
-        r (float or np.ndarray): Radius.
+    def enclosedMass_Msun(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        x = radius / self._rscale_kpc
+        return 4.0 * np.pi * self.rho_scale_Msun_kpc3 * self._rscale_kpc**3 * (
+            np.log(1.0 + x) - x / (1.0 + x)
+        )
 
-        Returns:
-        float or np.ndarray: Logarithmic derivative of circular velocity with respect to radius.
-        """
-        x = r / (5 * self.R200)
-        return 0.5 * (x**-1.5 + 2) / (2 * x**-1.5 + 1)
+    def v_vir_kms(self):
+        return float(np.sqrt(us.G_KPC_KM2_S2_PER_MSUN * self.Mvir_Msun / self._rvir_kpc))
 
-class CombinedPotential(CF.Potential):
-    def __init__(self,  M_vir, r_vir, c_vir, M_gal, a_gal, rho_mean, R200):
-        """
-        Initialize a combined potential with an NFW profile and a Plummer sphere.
-        
-        Parameters:
-        M_nfw (float): Virial mass of the NFW halo.
-        c_nfw (float): Concentration parameter of the NFW halo.
-        M_plummer (float): Total mass of the Plummer sphere.
-        a_plummer (float): Plummer scale radius.
-        """
-        self.M_vir = M_vir
-        self.r_vir = r_vir
-        self.c_vir = c_vir
-        self.M_gal = M_gal
-        self.a_gal = a_gal
-        self.rho_mean = rho_mean
-        self.R200 = R200
-        
-        # Scale radius
-        self.r_s = self.r_vir / c_vir
+    def v_ff_kms(self, radius_kpc, rdrop_kpc=None):
+        if rdrop_kpc is None:
+            rdrop_kpc = 2.0 * self.r200m_kpc()
+        return np.sqrt(2.0 * (self.phi_kms2(rdrop_kpc) - self.phi_kms2(radius_kpc)))
 
-        # Characteristic density
-        self.rho_s = M_vir / (4 * np.pi * self.r_s**3 * (np.log(1 + c_vir) - c_vir / (1 + c_vir)))
+    def vc_kms(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return np.sqrt(us.G_KPC_KM2_S2_PER_MSUN * self.enclosedMass_Msun(radius) / radius)
 
-    def enclosed_mass_nfw(self, r):
-        """
-        Calculate the enclosed mass at radius r corresponding to the NFW profile.
+    def dln_vc_dln_r(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        x = radius / self._rscale_kpc
+        denominator = (1.0 + x) ** 2 * (np.log(1.0 + x) - x / (1.0 + x))
+        return 0.5 * (x**2 / denominator - 1.0)
 
-        Parameters:
-        r (float or np.ndarray): Radius from the center.
+    def mean_enclosed_rho_over_rhocrit(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        density = self.enclosedMass_Msun(radius) / ((4.0 / 3.0) * np.pi * radius**3)
+        return density / self.cosmology.critical_density_Msun_kpc3(self.z)
 
-        Returns:
-        float or np.ndarray: Enclosed mass (in Solar Masses).
-        """
-        x = r / self.r_s
-        mass = 4 * np.pi * self.rho_s * self.r_s**3 * (np.log(1 + x) - x / (1 + x))
-        return mass.to('Msun')
-        
-    def enclosed_mass_plummer(self, r):
-        """
-        Compute the enclosed mass at radius r corresponding to the Plummer profile.
+    def _radius_at_overdensity(self, target_overdensity: float):
+        def residual(log_radius):
+            radius = 10.0**log_radius
+            return self.mean_enclosed_rho_over_rhocrit(radius) - target_overdensity
 
-        Parameters:
-        r (float or np.ndarray): Radius.
+        lower = np.log10(self._rscale_kpc * 1e-4)
+        upper = np.log10(self._rvir_kpc * 20.0)
+        grid = np.linspace(lower, upper, 256)
+        values = residual(grid)
+        sign_change = np.where(np.sign(values[:-1]) != np.sign(values[1:]))[0]
+        if len(sign_change) == 0:
+            return float(self._rvir_kpc)
+        idx = int(sign_change[0])
+        root = scipy.optimize.brentq(residual, grid[idx], grid[idx + 1])
+        return float(10.0**root)
 
-        Returns:
-        float or np.ndarray: Enclosed mass (in Solar Masses).
-        """
-        mass = self.M_gal * (r**3 / (r**2 + self.a_gal**2)**(3/2))
-        return mass.to('Msun')
+    def r200_kpc(self, delta: float = 200.0):
+        return self._radius_at_overdensity(delta)
 
-    def enclosed_mass_outer(self, r):
-        """
-        Compute the enclosed mass at radius r corresponding to the Plummer profile.
+    def r200m_kpc(self, delta: float = 200.0):
+        return self._radius_at_overdensity(delta * self.cosmology.Om_z(self.z))
 
-        Parameters:
-        r (float or np.ndarray): Radius.
+    def M200_Msun(self, delta: float = 200.0):
+        return float(self.enclosedMass_Msun(self.r200_kpc(delta)))
 
-        Returns:
-        float or np.ndarray: Enclosed mass (in Solar Masses).
-        """
-        term1 = (5 * self.R200) ** 1.5 * (2 / 3) * r ** 1.5
-        term2 = (1 / 3) * r ** 3
-        mass =  4 * np.pi * self.rho_mean * (term1 + term2)
-        return mass.to('Msun')
-        
-    def enclosed_mass(self, r):
-        """
-        Compute the total enclosed mass at radius r.
+    def M200m_Msun(self, delta: float = 200.0):
+        return float(self.enclosedMass_Msun(self.r200m_kpc(delta)))
 
-        Parameters:
-        r (float or np.ndarray): Radius.
+    def phi_kms2(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        x = radius / self._rscale_kpc
+        return (
+            -4.0
+            * np.pi
+            * us.G_KPC_KM2_S2_PER_MSUN
+            * self.rho_scale_Msun_kpc3
+            * self._rscale_kpc**2
+            * np.log(1.0 + x)
+            / x
+        )
 
-        Returns:
-        float or np.ndarray: Enclosed mass (in Solar Masses).
-        """
-        return self.enclosed_mass_nfw(r) + self.enclosed_mass_plummer(r) + self.enclosed_mass_outer(r)
+    def t_ff_Gyr(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return np.sqrt(2.0) * us.flow_time_Gyr(radius, self.vc_kms(radius))
 
-    def Phi(self, r):
-        """
-        Calculate the gravitational potential at radius r.
 
-        Parameters:
-        r (float or np.ndarray): Radius from the center.
+class PlummerPotential:
+    def __init__(self, M_Msun: float, a_kpc: float):
+        self.M_Msun = float(M_Msun)
+        self.a_kpc = float(a_kpc)
 
-        Returns:
-        float or np.ndarray: Gravitational potential (in km^2/s^2).
-        """
-        x = r / self.r_s
-        phi_NFW = -4 * np.pi * cons.G * self.rho_s * self.r_s**2 * np.log(1 + x) / x
-        phi_Plummer = -cons.G * self.M_gal / np.sqrt(r**2 + self.a_gal**2)
-        term1 = (4 / 3) * (5 * self.R200) ** 1.5 * r ** 0.5
-        term2 = (1 / 6) * r ** 2
-        phi_Outer = 4 * np.pi * cons.G * self.rho_mean * (term1 + term2)
-        phi = phi_NFW + phi_Plummer + phi_Outer
-        return phi.to('km**2/s**2')
-    
-    def vc(self, r):
-        """
-        Compute the circular velocity at radius r.
+    def enclosed_mass_Msun(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return self.M_Msun * radius**3 / np.power(radius**2 + self.a_kpc**2, 1.5)
 
-        Parameters:
-        r (float or np.ndarray): Radius.
+    def vc_kms(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return np.sqrt(us.G_KPC_KM2_S2_PER_MSUN * self.enclosed_mass_Msun(radius) / radius)
 
-        Returns:
-        float or np.ndarray: Circular velocity (in km/s).
-        """
-        vel = np.sqrt(cons.G * self.enclosed_mass(r) / r)
-        return vel.to('km/s')
-    
-    def dlnvc_dlnR(self, r):
-        """
-        Compute d(ln(v_c))/d(ln(r)) at radius r.
+    def phi_kms2(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return -us.G_KPC_KM2_S2_PER_MSUN * self.M_Msun / np.sqrt(radius**2 + self.a_kpc**2)
 
-        Parameters:
-        r (float or np.ndarray): Radius.
+    def dln_vc_dln_r(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return 0.5 * (3.0 * self.a_kpc**2 / (radius**2 + self.a_kpc**2) - 1.0)
 
-        Returns:
-        float or np.ndarray: Logarithmic derivative of circular velocity with respect to radius.
-        """
-        M_nfw_r = self.enclosed_mass_nfw(r)
-        M_plummer_r = self.enclosed_mass_plummer(r)
-        M_outer_r = self.enclosed_mass_outer(r)
-        
-        x = r / self.r_s
-        dM_nfw_dr = 4 * np.pi * self.rho_s * self.r_s**2 * (x / (1 + x)**2)
-        dM_plummer_dr = self.M_gal * (3 * r**2 * self.a_gal**2 / np.power(r**2 + self.a_gal**2, 2.5))
-        dM_outer_dr = 4 * np.pi * self.rho_mean * ((5 * self.R200)**1.5 * r**0.5 + r**2)
-        
-        total_mass = M_nfw_r + M_plummer_r + M_outer_r
-        total_derivative = dM_nfw_dr + dM_plummer_dr + dM_outer_dr
-        
-        return 0.5 * (total_derivative * r / total_mass - 1)
+    def dM_dr_Msun_per_kpc(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return self.M_Msun * 3.0 * radius**2 * self.a_kpc**2 / np.power(radius**2 + self.a_kpc**2, 2.5)
+
+
+class ModifiedPlummerPotential:
+    """Spherical softening used by the IC notebooks."""
+
+    def __init__(self, M_Msun: float, a_kpc: float, b_kpc: float):
+        self.M_Msun = float(M_Msun)
+        self.a_kpc = float(a_kpc)
+        self.b_kpc = float(b_kpc)
+
+    def enclosed_mass_Msun(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        s = np.sqrt(radius**2 + self.a_kpc**2)
+        return self.M_Msun * radius**3 / (s * (s + self.b_kpc) ** 2)
+
+    def dM_dr_Msun_per_kpc(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        s = np.sqrt(radius**2 + self.a_kpc**2)
+        numerator = self.a_kpc**2 * (3.0 * s + self.b_kpc) + 2.0 * s**2 * self.b_kpc
+        denominator = s**3 * (s + self.b_kpc) ** 3
+        return self.M_Msun * radius**2 * numerator / denominator
+
+    def vc_kms(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return np.sqrt(us.G_KPC_KM2_S2_PER_MSUN * self.enclosed_mass_Msun(radius) / radius)
+
+    def phi_kms2(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return -us.G_KPC_KM2_S2_PER_MSUN * self.M_Msun / (np.sqrt(radius**2 + self.a_kpc**2) + self.b_kpc)
+
+    def dln_vc_dln_r(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        mass = self.enclosed_mass_Msun(radius)
+        return 0.5 * (self.dM_dr_Msun_per_kpc(radius) * radius / mass - 1.0)
+
+
+class OuterHaloPotential:
+    def __init__(self, rho_mean_Msun_kpc3: float, R200_kpc: float):
+        self.rho_mean_Msun_kpc3 = float(rho_mean_Msun_kpc3)
+        self.R200_kpc = float(R200_kpc)
+
+    def enclosed_mass_Msun(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        term1 = (5.0 * self.R200_kpc) ** 1.5 * (2.0 / 3.0) * radius**1.5
+        term2 = radius**3 / 3.0
+        return 4.0 * np.pi * self.rho_mean_Msun_kpc3 * (term1 + term2)
+
+    def dM_dr_Msun_per_kpc(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return 4.0 * np.pi * self.rho_mean_Msun_kpc3 * ((5.0 * self.R200_kpc) ** 1.5 * radius**0.5 + radius**2)
+
+    def vc_kms(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return np.sqrt(us.G_KPC_KM2_S2_PER_MSUN * self.enclosed_mass_Msun(radius) / radius)
+
+    def phi_kms2(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        term1 = (4.0 / 3.0) * (5.0 * self.R200_kpc) ** 1.5 * radius**0.5
+        term2 = radius**2 / 6.0
+        return 4.0 * np.pi * us.G_KPC_KM2_S2_PER_MSUN * self.rho_mean_Msun_kpc3 * (term1 + term2)
+
+    def dln_vc_dln_r(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        x = radius / (5.0 * self.R200_kpc)
+        return 0.5 * (x**-1.5 + 2.0) / (2.0 * x**-1.5 + 1.0)
+
+
+class _CombinedPotentialBase:
+    def __init__(
+        self,
+        nfw: NFWPotential,
+        baryons,
+        outer: OuterHaloPotential,
+    ):
+        self.nfw = nfw
+        self.baryons = baryons
+        self.outer = outer
+
+        self.M_vir_Msun = nfw.M_vir_Msun
+        self.r_vir_kpc = nfw.r_vir_kpc
+        self.c_vir = nfw.c_vir
+        self.r_s_kpc = nfw._profile.r_s_kpc
+        self.rho_s_Msun_kpc3 = nfw._profile.rho_s_Msun_kpc3
+
+    def enclosed_mass_nfw_Msun(self, radius_kpc):
+        return self.nfw.enclosed_mass_Msun(radius_kpc)
+
+    def enclosed_mass_baryons_Msun(self, radius_kpc):
+        return self.baryons.enclosed_mass_Msun(radius_kpc)
+
+    def enclosed_mass_outer_Msun(self, radius_kpc):
+        return self.outer.enclosed_mass_Msun(radius_kpc)
+
+    def enclosed_mass_Msun(self, radius_kpc):
+        return (
+            self.enclosed_mass_nfw_Msun(radius_kpc)
+            + self.enclosed_mass_baryons_Msun(radius_kpc)
+            + self.enclosed_mass_outer_Msun(radius_kpc)
+        )
+
+    def vc_kms(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return np.sqrt(us.G_KPC_KM2_S2_PER_MSUN * self.enclosed_mass_Msun(radius) / radius)
+
+    def phi_kms2(self, radius_kpc):
+        return (
+            self.nfw.phi_kms2(radius_kpc)
+            + self.baryons.phi_kms2(radius_kpc)
+            + self.outer.phi_kms2(radius_kpc)
+        )
+
+    def dln_vc_dln_r(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        total_mass = self.enclosed_mass_Msun(radius)
+        total_derivative = (
+            self.nfw._profile.dM_dr_Msun_per_kpc(radius)
+            + self.baryons.dM_dr_Msun_per_kpc(radius)
+            + self.outer.dM_dr_Msun_per_kpc(radius)
+        )
+        return 0.5 * (total_derivative * radius / total_mass - 1.0)
+
+
+class CombinedPotential(_CombinedPotentialBase):
+    def __init__(
+        self,
+        M_vir_Msun: float,
+        r_vir_kpc: float,
+        c_vir: float,
+        M_gal_Msun: float,
+        a_gal_kpc: float,
+        rho_mean_Msun_kpc3: float,
+        R200_kpc: float,
+    ):
+        self.M_gal_Msun = float(M_gal_Msun)
+        self.a_gal_kpc = float(a_gal_kpc)
+        self.rho_mean_Msun_kpc3 = float(rho_mean_Msun_kpc3)
+        self.R200_kpc = float(R200_kpc)
+        super().__init__(
+            NFWPotential(M_vir_Msun, r_vir_kpc, c_vir),
+            PlummerPotential(self.M_gal_Msun, self.a_gal_kpc),
+            OuterHaloPotential(self.rho_mean_Msun_kpc3, self.R200_kpc),
+        )
+
+    @classmethod
+    def from_config(cls, config: HaloConfig):
+        rho_mean = config.rho_mean_Msun_kpc3
+        R200 = config.R200_kpc
+        if rho_mean is None or R200 is None or config.M_gal_Msun is None or config.a_gal_kpc is None:
+            raise ValueError("CombinedPotential.from_config requires M_gal_Msun, a_gal_kpc, rho_mean_Msun_kpc3, and R200_kpc")
+        return cls(
+            config.M_vir_Msun,
+            config.r_vir_kpc,
+            config.c_vir,
+            config.M_gal_Msun,
+            config.a_gal_kpc,
+            rho_mean,
+            R200,
+        )
+
+
+class CombinedPotential_using_modified_plummer(_CombinedPotentialBase):
+    def __init__(
+        self,
+        M_vir_Msun: float,
+        r_vir_kpc: float,
+        c_vir: float,
+        M_gal_Msun: float,
+        a_gal_kpc: float,
+        b_gal_kpc: float,
+        rho_mean_Msun_kpc3: float,
+        R200_kpc: float,
+    ):
+        self.M_gal_Msun = float(M_gal_Msun)
+        self.a_gal_kpc = float(a_gal_kpc)
+        self.b_gal_kpc = float(b_gal_kpc)
+        self.rho_mean_Msun_kpc3 = float(rho_mean_Msun_kpc3)
+        self.R200_kpc = float(R200_kpc)
+        super().__init__(
+            NFWPotential(M_vir_Msun, r_vir_kpc, c_vir),
+            ModifiedPlummerPotential(self.M_gal_Msun, self.a_gal_kpc, self.b_gal_kpc),
+            OuterHaloPotential(self.rho_mean_Msun_kpc3, self.R200_kpc),
+        )
+
+    @classmethod
+    def from_config(cls, config: HaloConfig):
+        if (
+            config.M_gal_Msun is None
+            or config.a_gal_kpc is None
+            or config.b_gal_kpc is None
+            or config.rho_mean_Msun_kpc3 is None
+            or config.R200_kpc is None
+        ):
+            raise ValueError(
+                "CombinedPotential_using_modified_plummer.from_config requires "
+                "M_gal_Msun, a_gal_kpc, b_gal_kpc, rho_mean_Msun_kpc3, and R200_kpc"
+            )
+        return cls(
+            config.M_vir_Msun,
+            config.r_vir_kpc,
+            config.c_vir,
+            config.M_gal_Msun,
+            config.a_gal_kpc,
+            config.b_gal_kpc,
+            config.rho_mean_Msun_kpc3,
+            config.R200_kpc,
+        )
+
 
 class MiyamotoNagaiPotential:
-    def __init__(self, M, a, b):
-        """
-        Initialize the Miyamoto-Nagai potential.
+    """Axisymmetric disk potential used by the IC notebook workflow."""
 
-        Parameters:
-        M (float): Total stellar disk mass.
-        a (float): Stellar scale radius.
-        b (float): Stellar scale height.
-        """
-        self.M = M
-        self.a = a
-        self.b = b
+    def __init__(self, M_Msun: float, a_kpc: float, b_kpc: float):
+        self.M_Msun = float(M_Msun)
+        self.a_kpc = float(a_kpc)
+        self.b_kpc = float(b_kpc)
 
-    def Phi(self, R, z):
-        """
-        Compute the gravitational potential at cylindrical radius r and height z.
+    def phi_kms2(self, R_kpc, z_kpc):
+        R = np.asarray(R_kpc, dtype=float)
+        z = np.asarray(z_kpc, dtype=float)
+        vertical = np.sqrt(z**2 + self.b_kpc**2) + self.a_kpc
+        return -us.G_KPC_KM2_S2_PER_MSUN * self.M_Msun / np.sqrt(R**2 + vertical**2)
 
-        Parameters:
-        R (float or np.ndarray): Cylindrical radius.
-        z (float or np.ndarray): Height.
+    def vc_kms(self, R_kpc):
+        R = _radius_array(R_kpc)
+        scale = self.a_kpc + self.b_kpc
+        return np.sqrt(us.G_KPC_KM2_S2_PER_MSUN * self.M_Msun * R**2 / np.power(R**2 + scale**2, 1.5))
 
-        Returns:
-        float or np.ndarray: Gravitational potential (in km^2/s^2).
-        """
-        phi = -cons.G * self.M / np.sqrt(R**2 + (np.sqrt(z**2 + self.b**2) + self.a)**2)
-        return phi.to('km**2/s**2')
+    def dln_vc_dln_r(self, R_kpc):
+        R = _radius_array(R_kpc)
+        scale = self.a_kpc + self.b_kpc
+        return 1.0 - 1.5 * R**2 / (R**2 + scale**2)
 
-class CombinedPotential_using_modified_plummer(CF.Potential):
-    def __init__(self,  M_vir, r_vir, c_vir, M_gal, a_gal, b_gal, rho_mean, R200):
-        """
-        Initialize a combined potential with an NFW profile and a modified Plummer sphere.
-        """
-        self.M_vir = M_vir
-        self.r_vir = r_vir
-        self.c_vir = c_vir
-        self.M_gal = M_gal
-        self.a_gal = a_gal
-        self.b_gal = b_gal
-        self.rho_mean = rho_mean
-        self.R200 = R200
-        
-        # Scale radius
-        self.r_s = self.r_vir / c_vir
 
-        # Characteristic density
-        self.rho_s = M_vir / (4 * np.pi * self.r_s**3 * (np.log(1 + c_vir) - c_vir / (1 + c_vir)))
-    
-    def enclosed_mass_nfw(self, r):
-        """
-        Calculate the enclosed mass at radius r corresponding to the NFW profile.
+class IsothermalSphere:
+    def __init__(self, Mvir_Msun: float, Rvir_kpc: float):
+        self.Mvir_Msun = float(Mvir_Msun)
+        self.Rvir_kpc = float(Rvir_kpc)
+        self.vvir_kms = float(np.sqrt(us.G_KPC_KM2_S2_PER_MSUN * self.Mvir_Msun / self.Rvir_kpc))
 
-        Parameters:
-        r (float or np.ndarray): Radius from the center.
+    def vc_kms(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        inner = np.full_like(radius, self.vvir_kms)
+        outer = np.sqrt(us.G_KPC_KM2_S2_PER_MSUN * self.Mvir_Msun / radius)
+        return np.where(radius < self.Rvir_kpc, inner, outer)
 
-        Returns:
-        float or np.ndarray: Enclosed mass (in Solar Masses).
-        """
-        x = r / self.r_s
-        mass = 4 * np.pi * self.rho_s * self.r_s**3 * (np.log(1 + x) - x / (1 + x))
-        return mass.to('Msun')
-        
-    def enclosed_mass_plummer(self, r):
-        """
-        Compute the enclosed mass at radius r for the modified Plummer potential.
-        
-        Φ = -GM / (√(r² + a²) + b)
-        
-        From Newton's shell theorem: M_enc = r² / G × dΦ/dr = M r³ / [s(s+b)²]
-        where s = √(r² + a²)
-        """
-        s = np.sqrt(r**2 + self.a_gal**2)
-        mass = self.M_gal * r**3 / (s * (s + self.b_gal)**2)
-        return mass.to('Msun')
+    def phi_kms2(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        outer = -us.G_KPC_KM2_S2_PER_MSUN * self.Mvir_Msun / radius
+        inner = -self.vvir_kms**2 * (1.0 + np.log(self.Rvir_kpc / radius))
+        return np.where(radius < self.Rvir_kpc, inner, outer) - 100.0**2
 
-    def _dM_plummer_dr(self, r):
-        """
-        Compute dM/dr for the modified Plummer profile at radius r.
-        
-        d/dr [M r³ / (s(s+b)²)] = M r² [a²(3s+b) + 2s²b] / [s³(s+b)³]
-        where s = √(r² + a²)
-        """
-        s = np.sqrt(r**2 + self.a_gal**2)
-        numerator = self.a_gal**2 * (3 * s + self.b_gal) + 2 * s**2 * self.b_gal
-        denominator = s**3 * (s + self.b_gal)**3
-        return self.M_gal * r**2 * numerator / denominator
-
-    def enclosed_mass_outer(self, r):
-        """
-        Compute the enclosed mass at radius r corresponding to the outer profile.
-
-        Parameters:
-        r (float or np.ndarray): Radius.
-
-        Returns:
-        float or np.ndarray: Enclosed mass (in Solar Masses).
-        """
-        term1 = (5 * self.R200) ** 1.5 * (2 / 3) * r ** 1.5
-        term2 = (1 / 3) * r ** 3
-        mass =  4 * np.pi * self.rho_mean * (term1 + term2)
-        return mass.to('Msun')
-        
-    def enclosed_mass(self, r):
-        """
-        Compute the total enclosed mass at radius r.
-
-        Parameters:
-        r (float or np.ndarray): Radius.
-
-        Returns:
-        float or np.ndarray: Enclosed mass (in Solar Masses).
-        """
-        return self.enclosed_mass_nfw(r) + self.enclosed_mass_plummer(r) + self.enclosed_mass_outer(r)
-
-    def Phi(self, r):
-        """
-        Calculate the gravitational potential at radius r.
-
-        Parameters:
-        r (float or np.ndarray): Radius from the center.
-
-        Returns:
-        float or np.ndarray: Gravitational potential (in km^2/s^2).
-        """
-        x = r / self.r_s
-        phi_NFW = -4 * np.pi * cons.G * self.rho_s * self.r_s**2 * np.log(1 + x) / x
-        phi_Plummer = -cons.G * self.M_gal / (np.sqrt(r**2 + self.a_gal**2) + self.b_gal)
-        term1 = (4 / 3) * (5 * self.R200) ** 1.5 * r ** 0.5
-        term2 = (1 / 6) * r ** 2
-        phi_Outer = 4 * np.pi * cons.G * self.rho_mean * (term1 + term2)
-        phi = phi_NFW + phi_Plummer + phi_Outer
-        return phi.to('km**2/s**2')
-    
-    def vc(self, r):
-        """
-        Compute the circular velocity at radius r.
-
-        Parameters:
-        r (float or np.ndarray): Radius.
-
-        Returns:
-        float or np.ndarray: Circular velocity (in km/s).
-        """
-        vel = np.sqrt(cons.G * self.enclosed_mass(r) / r)
-        return vel.to('km/s')
-    
-    def dlnvc_dlnR(self, r):
-        """
-        Compute d(ln(v_c))/d(ln(r)) at radius r.
-
-        Parameters:
-        r (float or np.ndarray): Radius.
-
-        Returns:
-        float or np.ndarray: Logarithmic derivative of circular velocity with respect to radius.
-        """
-        M_nfw_r = self.enclosed_mass_nfw(r)
-        M_plummer_r = self.enclosed_mass_plummer(r)
-        M_outer_r = self.enclosed_mass_outer(r)
-        
-        x = r / self.r_s
-        dM_nfw_dr = 4 * np.pi * self.rho_s * self.r_s**2 * (x / (1 + x)**2)
-        dM_plummer_dr = self._dM_plummer_dr(r)
-        dM_outer_dr = 4 * np.pi * self.rho_mean * ((5 * self.R200)**1.5 * r**0.5 + r**2)
-        
-        total_mass = M_nfw_r + M_plummer_r + M_outer_r
-        total_derivative = dM_nfw_dr + dM_plummer_dr + dM_outer_dr
-        
-        return 0.5 * (total_derivative * r / total_mass - 1)
-    
-# Example usage
-if __name__ == "__main__":
-    M_vir = 1e12 * un.Msun # Virial mass
-    c_vir = 10  # Concentration parameter
-
-    nfw = NFWPotential(M_vir, c_vir)
-
-    # Example radius (in meters)
-    r = 260 * un.kpc
-
-    print(f"Enclosed Mass at r={r} : {nfw.enclosed_mass(r):.3e}")
-    print(f"Circular Velocity at r={r} : {nfw.vc(r):.3e}")
-    print(f"Gravitational Potential at r={r} : {nfw.Phi(r):.3e}")
-    print(f"d(ln(v_c))/d(ln(r)) at r={r} : {nfw.dlnvc_dlnR(r):.3f}")
-    print(f"d(ln(v_c))/d(ln(r)) at r={r} : {nfw.dlnvc_dlnR2(r):.3f}")
+    def dln_vc_dln_r(self, radius_kpc):
+        radius = _radius_array(radius_kpc)
+        return np.where(radius < self.Rvir_kpc, 0.0, -0.5)
