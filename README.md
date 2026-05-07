@@ -35,11 +35,10 @@ install.
 |-------------------------------------|--------------------------------------------------------------------------|
 | `src/cgm_ics/cooling_flow.py`       | Steady-state flow ODE integrator and `Cooling` / `Potential` interfaces. |
 | `src/cgm_ics/WiersmaCooling.py`     | Wiersma et al. (2009) cooling functions.                                 |
-| `src/cgm_ics/HaloPotential.py`      | Simple analytic potentials (`PowerLaw`, `Polynom`, …).                   |
-| `src/cgm_ics/HaloPotential_new.py`  | Composite halo potential used in Stern+19: NFW + Behroozi+18 central galaxy + Diemer & Kravtsov 2014 external term. |
+| `src/cgm_ics/HaloPotential.py`      | Analytic potentials: simple (`PowerLaw`, `Polynom`, `NFW`, …) plus the GOTHAM composites (`NFWPotential`, `PlummerPotential`, `OuterHaloPotential`, `CombinedPotential`, …). |
 | `src/cgm_ics/ClusterGenerator.py`   | Star-cluster catalog generator (separate pipeline).                      |
 | `src/cgm_ics/solve_ode.py`          | Alternate ODE solver used by most production notebooks.                  |
-| `cooling/`                          | HDF5 / text cooling tables (Wiersma+09, Dopita & Sutherland, etc.).      |
+| `cooling_tables/`                   | HDF5 / text cooling tables (Wiersma+09, Dopita & Sutherland, etc.).      |
 | `ipynb/`                            | Jupyter notebooks driving the package.                                   |
 
 ## Notebooks
@@ -51,7 +50,7 @@ install.
 
 ## Cooling-table location
 
-`WiersmaCooling` resolves `cooling/` relative to the package source, so an
+`WiersmaCooling` resolves `cooling_tables/` relative to the package source, so an
 editable install picks it up automatically. To point at a different
 directory (e.g. when installing non-editably), set:
 

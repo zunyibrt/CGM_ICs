@@ -9,13 +9,13 @@ from numpy import log as ln, log10 as log, e, pi, arange, zeros
 from astropy import units as un, constants as cons
 from . import cooling_flow as CF
 
-# Cooling tables live at the repo root in `cooling/`. Resolve once at import:
+# Cooling tables live at the repo root in `cooling_tables/`. Resolve once at import:
 # 1) $CGM_ICS_COOLING_DIR if set
-# 2) <repo_root>/cooling assuming editable install (src/cgm_ics/ -> repo_root)
+# 2) <repo_root>/cooling_tables assuming editable install (src/cgm_ics/ -> repo_root)
 _COOLING_DIR = Path(
     os.environ.get(
         "CGM_ICS_COOLING_DIR",
-        Path(__file__).resolve().parent.parent.parent / "cooling",
+        Path(__file__).resolve().parent.parent.parent / "cooling_tables",
     )
 )
 dataDir = str(_COOLING_DIR / "Wiersma09_CoolingTables") + "/"
