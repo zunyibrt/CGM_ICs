@@ -7,7 +7,7 @@ import scipy
 from numpy import log as ln, log10 as log, e, pi, arange, zeros
 from astropy import units as un, constants as cons
 from astropy.cosmology import Planck15 as cosmo
-import cooling_flow as CF
+from . import cooling_flow as CF
 
 class PowerLaw(CF.Potential):
     def __init__(self,m,vc_Rvir,Rvir,R_phi0=None):

@@ -5,7 +5,7 @@ All inputs are exepcted to come with (the right) dimensional units
 
 import numpy as np
 from astropy import units as un, constants as cons
-import cooling_flow as CF
+from . import cooling_flow as CF
 
 class NFWPotential(CF.Potential):
     def __init__(self, M_vir, r_vir, c_vir):

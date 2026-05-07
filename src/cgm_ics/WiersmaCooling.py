@@ -1,13 +1,24 @@
 """
 Module for providing the Wiersma et al. (2009) cooling functions to the cooling_flow module
 """
-dataDir = '../cooling/Wiersma09_CoolingTables/'
-import glob,h5py
+import glob, h5py, os
+from pathlib import Path
 import scipy, numpy as np
 from scipy import integrate, interpolate
 from numpy import log as ln, log10 as log, e, pi, arange, zeros
 from astropy import units as un, constants as cons
-import cooling_flow as CF
+from . import cooling_flow as CF
+
+# Cooling tables live at the repo root in `cooling/`. Resolve once at import:
+# 1) $CGM_ICS_COOLING_DIR if set
+# 2) <repo_root>/cooling assuming editable install (src/cgm_ics/ -> repo_root)
+_COOLING_DIR = Path(
+    os.environ.get(
+        "CGM_ICS_COOLING_DIR",
+        Path(__file__).resolve().parent.parent.parent / "cooling",
+    )
+)
+dataDir = str(_COOLING_DIR / "Wiersma09_CoolingTables") + "/"
 
 class Constant_Cooling(CF.Cooling):
     def __init__(self,LAMBDA):
@@ -69,7 +80,7 @@ class Wiersma_Cooling(CF.Cooling):
         return self.dlnLambda_dlnrho_interpolation((log(T.to('K').value), log(nH.to('cm**-3').value)))
     
 class Kartick_Cooling(CF.Cooling):
-    table_path = '../cooling/Kartick_CIE_cooling.table'
+    table_path = str(_COOLING_DIR / 'Kartick_CIE_cooling.table')
     def __init__(self):
         table = np.genfromtxt(self.table_path)
         self.Tbins = table[:,0]
@@ -90,7 +101,7 @@ class Kartick_Cooling(CF.Cooling):
         return 0.
     
 class DopitaSutherland_CIE(CF.Cooling):
-    table_path = '../cooling/DopitaSutherland_CIE.dat'
+    table_path = str(_COOLING_DIR / 'DopitaSutherland_CIE.dat')
     def __init__(self,Z2Zsun):
         table = np.genfromtxt(self.table_path)
         self.Tbins = table[:,0]
