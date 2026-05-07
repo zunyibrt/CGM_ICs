@@ -21,7 +21,9 @@ class ClusterParameters:
     mass_range: Tuple[float, float] = (1e4, 1e6)  # Solar masses
     alpha: float = 2.0  # Power-law index
     radius_kpc: float = 1.0  # Kiloparsecs
-    
+    spatial_profile: str = 'uniform'       # 'uniform', 'plummer', 'power', 'gaussian'
+    concentration: float = 3.0             # profile-specific (see above)
+
     @property
     def radius_pc(self) -> float:
         """Convert radius from kpc to parsecs."""
@@ -49,6 +51,11 @@ class ClusterParameters:
             raise ValueError("Power-law index must be positive")
         if self.radius_kpc <= 0:
             raise ValueError("Radius must be positive")
+        valid_profiles = ('uniform', 'plummer', 'power', 'gaussian')
+        if self.spatial_profile not in valid_profiles:
+            raise ValueError(f"spatial_profile must be one of {valid_profiles}")
+        if self.concentration <= 0:
+            raise ValueError("concentration must be positive")
 
 
 class MassDistribution:
@@ -168,6 +175,77 @@ class SpatialDistribution:
         x = r * np.cos(theta)
         y = r * np.sin(theta)
         
+        return x, y, r
+    
+    @staticmethod
+    def generate_centrally_concentrated(
+        n: int,
+        radius: float,
+        profile: str = 'plummer',
+        concentration: float = 1.0,
+        seed: Optional[int] = None
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Generate centrally concentrated positions within a disk.
+
+        Parameters
+        ----------
+        n : int
+            Number of positions
+        radius : float
+            Disk truncation radius in parsecs
+        profile : str
+            Radial profile type:
+            'plummer'   - Plummer sphere projected to 2D (physical default)
+            'power'     - Power-law CDF: P(r) ∝ r^beta, beta < 2 concentrates
+            'gaussian'  - Gaussian envelope; concentration sets sigma = radius/concentration
+        concentration : float
+            Profile-specific scale parameter.
+            - For 'plummer': scale radius = radius / concentration (higher = more concentrated)
+            - For 'power':   exponent beta (0 < beta < 2; lower = more concentrated)
+            - For 'gaussian': sigma = radius / concentration
+        seed : Optional[int]
+            Random seed for reproducibility
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray, np.ndarray]
+            x, y coordinates and radial distances (all in parsecs)
+        """
+        if seed is not None:
+            np.random.seed(seed)
+
+        u = np.random.random(n)
+        theta = np.random.random(n) * 2 * np.pi
+        
+        if profile == 'plummer':
+            # Plummer: CDF in 2D projection is P(r) = r^2 / (r^2 + a^2)
+            # Inverse: r = a * sqrt(u / (1 - u))
+            a = radius / concentration
+            # CDF at truncation radius — normalisation factor
+            u_max = radius**2 / (radius**2 + a**2)
+            # Sample u uniformly in [0, u_max] so r_raw never exceeds radius
+            u = np.random.random(n) * u_max
+            r = a * np.sqrt(u / (1.0 - u + 1e-10))
+
+        elif profile == 'power':
+            # Power-law CDF: P(r) ∝ r^beta, so r = radius * u^(1/beta)
+            # beta < 2 gives more central concentration than uniform (beta=2)
+            beta = np.clip(concentration, 0.1, 2.0)
+            r = radius * u ** (1.0 / beta)
+
+        elif profile == 'gaussian':
+            # Draw r from a Gaussian in 2D: p(r) ∝ r * exp(-r^2 / (2*sigma^2))
+            # Use Rayleigh distribution: r = sigma * sqrt(-2 * ln(u))
+            sigma = radius / concentration
+            r_raw = sigma * np.sqrt(-2.0 * np.log(u + 1e-10))
+            r = np.clip(r_raw, 0, radius)
+
+        else:
+            raise ValueError(f"Unknown profile '{profile}'. Choose from: 'plummer', 'power', 'gaussian'")
+
+        x = r * np.cos(theta)
+        y = r * np.sin(theta)
         return x, y, r
 
 
@@ -500,10 +578,17 @@ class StarClusterGenerator:
         )
         
         # Generate positions in x-y plane
-        x, y, r = SpatialDistribution.generate_uniform_disk(
-            self.params.n_clusters,
-            self.params.radius_pc
-        )
+        if self.params.spatial_profile == 'uniform':
+            x, y, r = SpatialDistribution.generate_uniform_disk(
+                self.params.n_clusters, self.params.radius_pc
+            )
+        else:
+            x, y, r = SpatialDistribution.generate_centrally_concentrated(
+                self.params.n_clusters,
+                self.params.radius_pc,
+                profile=self.params.spatial_profile,
+                concentration=self.params.concentration
+            )
         
         # Generate z-coordinates: uniform between -10 and 10
         z = np.random.uniform(-10, 10, self.params.n_clusters)
