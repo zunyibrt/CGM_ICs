@@ -35,8 +35,8 @@ install.
 |-------------------------------------|--------------------------------------------------------------------------|
 | `src/cgm_ics/cooling_flow.py`       | Steady-state flow ODE integrator and `Cooling` / `Potential` interfaces. |
 | `src/cgm_ics/cooling_functions.py`  | Concrete `Cooling` implementations: `Wiersma_Cooling` (HDF5), `Kartick_Cooling`, `DopitaSutherland_CIE`, `Constant_Cooling`. |
-| `src/cgm_ics/HaloPotential.py`      | Analytic potentials: simple (`PowerLaw`, `Polynom`, `NFW`, …) plus the GOTHAM composites (`NFWPotential`, `PlummerPotential`, `OuterHaloPotential`, `CombinedPotential`, …). |
-| `src/cgm_ics/ClusterGenerator.py`   | Star-cluster catalog generator (separate pipeline).                      |
+| `src/cgm_ics/halo_potentials.py`      | Analytic potentials: simple (`PowerLaw`, `Polynom`, `NFW`, …) plus the GOTHAM composites (`NFWPotential`, `PlummerPotential`, `OuterHaloPotential`, `CombinedPotential`, …). |
+| `src/cgm_ics/cluster_generator.py`   | Star-cluster catalog generator (separate pipeline).                      |
 | `src/cgm_ics/solve_ode.py`          | Alternate ODE solver used by most production notebooks.                  |
 | `cooling_tables/`                   | HDF5 / text cooling tables (Wiersma+09, Dopita & Sutherland, etc.).      |
 | `ipynb/`                            | Jupyter notebooks driving the package.                                   |
@@ -46,7 +46,7 @@ install.
 - `ipynb/steady_state_integration_example.ipynb` — minimal example of integrating a steady-state flow.
 - `ipynb/generate_CGM_ics.ipynb` — produces the actual CGM initial conditions (the headline output).
 - `ipynb/generate_coolings_flows.ipynb`, `ipynb/generate_cooling_table.ipynb` — parameter sweeps producing `ipynb/tables/cgm_profiles_*.txt`.
-- `ipynb/generate_clusters.ipynb`, `ipynb/catalog_analysis.ipynb` — drive `ClusterGenerator`.
+- `ipynb/generate_clusters.ipynb`, `ipynb/catalog_analysis.ipynb` — drive `cluster_generator`.
 
 ## Cooling-table location
 
