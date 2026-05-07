@@ -34,7 +34,7 @@ install.
 | Path                                | Contents                                                                 |
 |-------------------------------------|--------------------------------------------------------------------------|
 | `src/cgm_ics/cooling_flow.py`       | Steady-state flow ODE integrator and `Cooling` / `Potential` interfaces. |
-| `src/cgm_ics/WiersmaCooling.py`     | Wiersma et al. (2009) cooling functions.                                 |
+| `src/cgm_ics/cooling_functions.py`  | Concrete `Cooling` implementations: `Wiersma_Cooling` (HDF5), `Kartick_Cooling`, `DopitaSutherland_CIE`, `Constant_Cooling`. |
 | `src/cgm_ics/HaloPotential.py`      | Analytic potentials: simple (`PowerLaw`, `Polynom`, `NFW`, …) plus the GOTHAM composites (`NFWPotential`, `PlummerPotential`, `OuterHaloPotential`, `CombinedPotential`, …). |
 | `src/cgm_ics/ClusterGenerator.py`   | Star-cluster catalog generator (separate pipeline).                      |
 | `src/cgm_ics/solve_ode.py`          | Alternate ODE solver used by most production notebooks.                  |
@@ -50,7 +50,7 @@ install.
 
 ## Cooling-table location
 
-`WiersmaCooling` resolves `cooling_tables/` relative to the package source, so an
+`cooling_functions` resolves `cooling_tables/` relative to the package source, so an
 editable install picks it up automatically. To point at a different
 directory (e.g. when installing non-editably), set:
 
