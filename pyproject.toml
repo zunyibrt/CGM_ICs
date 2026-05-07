@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "cgm_ics"
 version = "0.1.0"
 description = "Initial conditions for hydrodynamic simulations of the CGM, based on 1D steady-state cooling-flow solutions (Stern et al. 2019)."
-readme = "README.txt"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=2.0",
