@@ -1,6 +1,14 @@
 # CGM_ICs
 
-Initial conditions for hydrodynamic simulations of the ISM + CGM, based on
+This repository is based on
+[JonathanSternAstro/CGM_ICs](https://github.com/JonathanSternAstro/CGM_ICs),
+a package for deriving CGM initial conditions for hydrodynamic simulations of
+the ISM + CGM. It extends the upstream code with additional potentials,
+cooling-table support, and cluster-catalog generation, and is focused on
+producing the initial conditions for the
+[GOTHAM](https://github.com/dfielding14/athenak/tree/gotham-1.0) suite of galaxy simulations.
+
+Initial conditions are based on
 1D steady-state cooling-flow solutions from
 [Stern et al. 2019, MNRAS 488, 2549](https://doi.org/10.1093/mnras/stz1859).
 
