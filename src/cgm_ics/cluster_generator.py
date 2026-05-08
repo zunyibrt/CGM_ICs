@@ -6,13 +6,13 @@ and uniform spatial distribution for astrophysical simulations.
 """
 
 from dataclasses import dataclass
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, Callable
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch, Circle
 import matplotlib.patheffects as PathEffects
-import cmasher as cmr
+import cmasher  # noqa: F401  # registers 'cmr.*' colormaps with matplotlib (used by name in plots)
 
 @dataclass
 class ClusterParameters:
@@ -23,6 +23,8 @@ class ClusterParameters:
     radius_kpc: float = 1.0  # Kiloparsecs
     spatial_profile: str = 'uniform'       # 'uniform', 'plummer', 'power', 'gaussian'
     concentration: float = 3.0             # profile-specific (see above)
+    z_range_pc: Tuple[float, float] = (-10.0, 10.0)   # vertical scatter (parsecs); thin-disk geometry
+    t_min_range: Tuple[float, float] = (0.0, 0.1)     # cluster start-time window (simulation time units)
 
     @property
     def radius_pc(self) -> float:
@@ -396,10 +398,10 @@ class ClusterVisualizer:
                                     edgecolor='#1a1a2e', linewidth=0.5)
         
         # Color gradient for bars
+        cmap = plt.colormaps['cmr.bubblegum']
         for i, patch in enumerate(patches):
             color_ratio = i / (len(patches) - 1)
-            color = plt.cm.get_cmap('cmr.bubblegum')(color_ratio)
-            patch.set_facecolor(color)
+            patch.set_facecolor(cmap(color_ratio))
             patch.set_alpha(0.8)
         
         # Add count labels
@@ -526,10 +528,14 @@ class StarClusterGenerator:
         --------
         Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
             vx, vy, vz velocity components and velocity magnitude
+
+        Notes
+        -----
+        ``v_mag`` is initialized to 0 as a placeholder. Call
+        :meth:`set_velocity_profile` after :meth:`generate_clusters` to set
+        physically meaningful tangential velocities; otherwise vx and vy are 0.
         """
-        # Calculate velocity magnitude at fixed height (10 kpc)
-        # Assumes combined.vc and cu_velocity are defined elsewhere in the code
-        v_mag = 1.0 #(combined.vc(10*un.kpc)/cu_velocity).to('')
+        v_mag = 0.0
         
         # For counterclockwise motion: v_tangential = (-y, x) / r * v_mag
         # Avoid division by zero for clusters at the center
@@ -563,7 +569,8 @@ class StarClusterGenerator:
             - x_pc, y_pc: Cartesian coordinates in parsecs
             - r_pc: Radial distance from center in parsecs
             - vx, vy, vz: Velocity components (vx, vy for circular motion, vz is vertical kick)
-            - v_mag: Velocity magnitude (in x-y plane)
+            - v_mag: Velocity magnitude (in x-y plane). Initialized to 0;
+              call :meth:`set_velocity_profile` to assign physical values.
         """
         # Set random seed for complete reproducibility
         if seed is not None:
@@ -590,11 +597,8 @@ class StarClusterGenerator:
                 concentration=self.params.concentration
             )
         
-        # Generate z-coordinates: uniform between -10 and 10
-        z = np.random.uniform(-10, 10, self.params.n_clusters)
-
-        # Generate t_min values: uniform between 0 and 0.1
-        t_min = np.random.uniform(0, 0.1, self.params.n_clusters)
+        z = np.random.uniform(*self.params.z_range_pc, self.params.n_clusters)
+        t_min = np.random.uniform(*self.params.t_min_range, self.params.n_clusters)
         
         # Calculate velocities for counterclockwise motion with vertical kick
         vx, vy, vz, v_mag = self._calculate_velocities(x, y, r, self.params.n_clusters)
@@ -682,7 +686,7 @@ class StarClusterGenerator:
         
         return stats
     
-    def set_velocity_profile(self, velocity_func: callable) -> None:
+    def set_velocity_profile(self, velocity_func: Callable[[np.ndarray], np.ndarray]) -> None:
         """
         Set new velocity magnitudes based on a function of radius.
         
@@ -726,9 +730,16 @@ class StarClusterGenerator:
         # Calculate new velocity magnitudes based on radius
         v_mag_new = velocity_func(r)
         
-        # Ensure v_mag_new is an array
+        # Ensure v_mag_new is an array of the right shape
         if np.isscalar(v_mag_new):
             v_mag_new = np.full_like(r, v_mag_new)
+        else:
+            v_mag_new = np.asarray(v_mag_new)
+            if v_mag_new.shape != r.shape:
+                raise ValueError(
+                    f"velocity_func returned shape {v_mag_new.shape}, "
+                    f"expected {r.shape} (one value per cluster)"
+                )
         
         # Recalculate vx and vy for counterclockwise motion with new magnitude
         vx_new = np.zeros_like(x)
@@ -792,7 +803,7 @@ class StarClusterGenerator:
             
         Format:
         -------
-        # x,  y,  z,   vx,  vy,  vz, t_min, cl_mass(M_sol)
+        # x(kpc), y(kpc), z(kpc), vx, vy, vz, t_min, cl_mass(M_sol)
         1.0 0.0 0.0  0.0  9.496767343529157  0.0   0.0    1e4
         """
         if self.clusters is None:
@@ -803,7 +814,7 @@ class StarClusterGenerator:
         
         with open(filename, 'w') as f:
             # Write header
-            f.write("# x,  y,  z,   vx,  vy,  vz, t_min, cl_mass(M_sol)\n")
+            f.write("# x(kpc), y(kpc), z(kpc), vx, vy, vz, t_min, cl_mass(M_sol)\n")
             
             # Write data for each cluster
             for _, row in self.clusters.iterrows():

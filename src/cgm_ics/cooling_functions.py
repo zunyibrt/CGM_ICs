@@ -3,9 +3,9 @@ Module for providing the Wiersma et al. (2009) cooling functions to the cooling_
 """
 import glob, h5py, os
 from pathlib import Path
-import scipy, numpy as np
-from scipy import integrate, interpolate
-from numpy import log as ln, log10 as log, e, pi, arange, zeros
+import numpy as np
+from scipy import interpolate
+from numpy import log10 as log
 from astropy import units as un, constants as cons
 from . import cooling_flow as CF
 
@@ -42,17 +42,16 @@ class Wiersma_Cooling(CF.Cooling):
         zs = np.array([float(fn[-10:-5]) for fn in fns])
         fn = fns[zs.argsort()][searchsortedclosest(sorted(zs), z)]
         
-        f=h5py.File(fn,'r')
-        
         He2Habundance = 10**-1.07 * (0.71553 + 0.28447*Z2Zsun) #Asplund+09, Groves+04
         X = (1 - 0.014*Z2Zsun) / (1.+4.*He2Habundance)
         Y = 4.*He2Habundance * X
         iHe = 1  # searchsortedclosest(f['Metal_free']['Helium_mass_fraction_bins'][:],Y)
-        
-        H_He_Cooling  = f['Metal_free']['Net_Cooling'][iHe,...]
-        Tbins         = f['Metal_free']['Temperature_bins'][...]
-        nHbins        = f['Metal_free']['Hydrogen_density_bins'][...]
-        Metal_Cooling = f['Total_Metals']['Net_cooling'][...] * Z2Zsun    
+
+        with h5py.File(fn, 'r') as f:
+            H_He_Cooling  = f['Metal_free']['Net_Cooling'][iHe,...]
+            Tbins         = f['Metal_free']['Temperature_bins'][...]
+            nHbins        = f['Metal_free']['Hydrogen_density_bins'][...]
+            Metal_Cooling = f['Total_Metals']['Net_cooling'][...] * Z2Zsun
         
         self.f_Cooling = interpolate.RegularGridInterpolator((log(Tbins), log(nHbins)),
                                                         Metal_Cooling+H_He_Cooling, 
@@ -102,11 +101,19 @@ class Kartick_Cooling(CF.Cooling):
     
 class DopitaSutherland_CIE(CF.Cooling):
     table_path = str(_COOLING_DIR / 'DopitaSutherland_CIE.dat')
-    def __init__(self,Z2Zsun):
+    _Z_TO_COL = {1.0: 1, 1/3.: 2}  # only these two columns exist in the table
+
+    def __init__(self, Z2Zsun):
+        try:
+            col = self._Z_TO_COL[Z2Zsun]
+        except KeyError:
+            raise ValueError(
+                f"DopitaSutherland_CIE only has tabulated cooling for "
+                f"Z2Zsun in {sorted(self._Z_TO_COL)}, got {Z2Zsun!r}"
+            )
         table = np.genfromtxt(self.table_path)
-        self.Tbins = table[:,0]
-        if Z2Zsun==1:   self.LAMBDAs = table[:,1] 
-        if Z2Zsun==1/3.: self.LAMBDAs = table[:,2] 
+        self.Tbins = table[:, 0]
+        self.LAMBDAs = table[:, col]
         ### convert to definition that n_H^2 Lambda is cooling per unit volume
         n_i_to_n_H = 1.22**-1 / 0.7
         n_e_to_n_H = 1.17**-1 / 0.7

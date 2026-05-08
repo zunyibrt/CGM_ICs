@@ -178,12 +178,17 @@ class CGMSolution:
         self.direction = direction
         self.inward_solution = None
         self.stopReason = stop_reason
-        if np.any(self.Bernoulli > 0): # Check if unbound
-            stop_reason = StopReason.UNBOUND
+        if np.any(self.Bernoulli > 0):  # patch for cases where B>0 isn't a terminal event
+            self.stopReason = StopReason.UNBOUND
             
     def add_inward_solution(self, inward_solution):
         """Add an inward solution to the existing result."""
-        assert(self.direction == 1 and inward_solution.direction == -1)
+        if self.direction != 1 or inward_solution.direction != -1:
+            raise ValueError(
+                f"add_inward_solution requires this solution to be outward "
+                f"(direction=1, got {self.direction}) and the argument to be "
+                f"inward (direction=-1, got {inward_solution.direction})"
+            )
         self.inward_solution = inward_solution.result
     
     @property
@@ -274,18 +279,18 @@ class CGMSolution:
     @property
     def t_ffs(self) -> un.Quantity:
         """Free fall time of the solution at all radii."""
-        return (2**0.5 * self.Rs / self.potential.vc(self.radii)).to('Gyr')
+        return (2**0.5 * self.Rs / self.potential.vc(self.Rs)).to('Gyr')
 
     @property
     def Mgas(self) -> un.Quantity:
         """Calculate cumulative gas mass."""
-        dr = np.gradient(self.radii)
+        dr = np.gradient(self.Rs)
         return (4 * np.pi * self.Rs**2 * self.rhos * dr).cumsum().to('Msun')
 
     @property
     def L_cools_per_volume(self) -> un.Quantity:
         """Cooling luminosity per volume of the solution at all radii."""
-        return self.nHs()**2 *self.cooling.LAMBDA(self.Ts, self.nHs)
+        return self.nHs**2 * self.cooling.LAMBDA(self.Ts, self.nHs)
 
     @property
     def y_integrand(self):
@@ -293,10 +298,9 @@ class CGMSolution:
         A = cons.sigma_T / (cons.m_e * cons.c**2) * cons.k_B
         return (A * self.nEs * self.Ts).to('cm**-1')
 
-    @property
     def R_cool(self, time: un.Quantity) -> un.Quantity:
         """Cooling radius for a given time (e.g., Hubble time)."""
-        return 10.**np.interp(np.log10(time.value), 
+        return 10.**np.interp(np.log10(time.value),
                               np.log10(self.t_cools.value),
                               np.log10(self.Rs.value)) * un.kpc
 
@@ -359,6 +363,7 @@ def shoot_from_R_sonic(
         If return_all_results is True: Dictionary of all attempted solutions keyed by x values.
     """
     results = {} # Dictionary to store intermediate results
+    res = None
 
     # Binary search for the right temperature at the sonic radius
     while x_high - x_low > tol:
@@ -399,7 +404,7 @@ def shoot_from_R_sonic(
 
     if return_all_results:
         return results
-    if results and res.stopReason == StopReason.MAX_RADIUS:
+    if res is not None and res.stopReason == StopReason.MAX_RADIUS:
         return res
     print('No result reached R_max. Set return_all_results=True to check intermediate solutions.')
     return None
@@ -448,7 +453,8 @@ def shoot_from_R_circ(
         If return_all_results is True: Dictionary of all attempted solutions keyed by temperature values.
     """
     results = {}
-    
+    res = None
+
     while np.log10(T_high / T_low) > tol:
         # Get initial values
         T0 = (T_high * T_low)**0.5
@@ -483,12 +489,11 @@ def shoot_from_R_circ(
             break
             
     if return_all_results:
-        return results    
-    if res.stopReason == StopReason.MAX_RADIUS:
+        return results
+    if res is not None and res.stopReason == StopReason.MAX_RADIUS:
         return res
-    else:
-        print('No result reached R_max. Set return_all_results=True to check intermediate solutions.')
-        return None
+    print('No result reached R_max. Set return_all_results=True to check intermediate solutions.')
+    return None
         
 ########## Integration Functions. ##########
 def IntegrateFlowEquations(
@@ -930,9 +935,12 @@ def _calc_rho_from_tflow2tcool(
         return vel.value - v.to('km/s').value
     try:
         nH = scipy.optimize.brentq(v_from_n, 1e-7, 1e10) * un.cm**-3
-    except:
-        raise NoValidDensityError
-        
+    except (ValueError, RuntimeError) as e:
+        raise NoValidDensityError(
+            f"brentq failed to find nH for v={v.to('km/s'):.3g}, T={T.to('K'):.3g}, "
+            f"R={R.to('kpc'):.3g}, tflow/tcool={tflow2tcool:.3g}"
+        ) from e
+
     return (nH * cons.m_p/GC.X).to('g/cm3')
     
 def _calc_dlnTdlnR_at_sonic_point(

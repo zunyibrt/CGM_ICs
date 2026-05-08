@@ -3,8 +3,7 @@ Module providing implementations of simple gravity potentials to the cooling_flo
 """
 
 import numpy as np
-import scipy
-from numpy import log as ln, log10 as log, e, pi, arange, zeros
+from numpy import log as ln, log10 as log, pi, arange
 from astropy import units as un, constants as cons
 from astropy.cosmology import Planck15 as cosmo
 from . import cooling_flow as CF
@@ -17,10 +16,10 @@ class PowerLaw(CF.Potential):
         self.m = m
         self.vc_Rvir = vc_Rvir
         self.Rvir = Rvir
-        if R_phi0==None:
-            self.R_phi0 = 100*self.Rvir 
+        if R_phi0 is None:
+            self.R_phi0 = 100*self.Rvir
         else:
-            self.R_phi0 = R_phi0 
+            self.R_phi0 = R_phi0
     def vc(self, r):
         return self.vc_Rvir * (r/self.Rvir)**self.m
     def Phi(self, r):
@@ -39,10 +38,10 @@ class Polynom(CF.Potential):
         """
         self.coeffs = coeffs
         self.Rvir = Rvir
-        if R_phi0==None:
-            self.R_phi0 = 100*self.Rvir 
+        if R_phi0 is None:
+            self.R_phi0 = 100*self.Rvir
         else:
-            self.R_phi0 = R_phi0 
+            self.R_phi0 = R_phi0
     def vc(self, r):
         return 10.**np.sum(np.array([self.coeffs[i] * log(r/self.Rvir)**i for i in range(len(self.coeffs))]),axis=0) * un.km/un.s
     def Phi(self, r): #currently numerical calculation, maybe switch to analytic solution
@@ -100,7 +99,7 @@ class NFW(CF.Potential):
     def v_vir(self):
         return ((cons.G*self.Mvir / self.rvir())**0.5).to('km/s')
     def v_ff(self,r,rdrop=None):
-        if rdrop==None: rdrop = 2*self.r200m()
+        if rdrop is None: rdrop = 2*self.r200m()
         return ((2*(self.Phi(rdrop) - self.Phi(r)))**0.5).to('km/s')
     def vc(self,r):
         Ms = self.enclosedMass(r)
@@ -112,12 +111,12 @@ class NFW(CF.Potential):
         return Ms / (4/3.*pi*r**3) / cosmo.critical_density(self.z)
     def r200(self,delta=200.):
         rs = arange(self.dr.value,2*self.rvir().value,self.dr.value)*un.kpc
-        mean_rho2rhocrit = self.mean_enclosed_rho2rhocrit(rs)
-        return rs[searchsorted(-mean_rho2rhocrit,-delta)]
+        mean_rho2rhocrit = self.mean_enclosed_rho2rhocrit(rs).to('').value
+        return rs[np.searchsorted(-mean_rho2rhocrit,-delta)]
     def r200m(self,delta=200.):
         rs = arange(self.dr.value,2*self.rvir().value,self.dr.value)*un.kpc
-        mean_rho2rhocrit = self.mean_enclosed_rho2rhocrit(rs)
-        return rs[searchsorted(-mean_rho2rhocrit,-delta*cosmo.Om(self.z))]		
+        mean_rho2rhocrit = self.mean_enclosed_rho2rhocrit(rs).to('').value
+        return rs[np.searchsorted(-mean_rho2rhocrit,-delta*cosmo.Om(self.z))]
     def M200(self,delta=200.):
         return self.enclosedMass(self.r200(delta))
     def M200m(self,delta=200.):
@@ -170,6 +169,10 @@ class NFWPotential(CF.Potential):
         mass = 4 * pi * self.rho_s * self.r_s**3 * (ln(1 + x) - x / (1 + x))
         return mass.to('Msun')
 
+    def _dM_dr(self, r):
+        x = r / self.r_s
+        return 4 * pi * self.rho_s * self.r_s**2 * (x / (1 + x)**2)
+
     def vc(self, r):
         return np.sqrt(cons.G * self.enclosed_mass(r) / r).to('km/s')
 
@@ -192,6 +195,9 @@ class PlummerPotential(CF.Potential):
     def enclosed_mass(self, r):
         return (self.M * r**3 / (r**2 + self.a**2)**(3/2)).to('Msun')
 
+    def _dM_dr(self, r):
+        return self.M * 3 * r**2 * self.a**2 / np.power(r**2 + self.a**2, 2.5)
+
     def vc(self, r):
         return np.sqrt(cons.G * self.enclosed_mass(r) / r).to('km/s')
 
@@ -200,6 +206,35 @@ class PlummerPotential(CF.Potential):
 
     def dlnvc_dlnR(self, r):
         return 0.5 * (3 * self.a**2 / (r**2 + self.a**2) - 1)
+
+
+class ModifiedPlummerPotential(CF.Potential):
+    """Modified Plummer galaxy with Phi = -GM / (sqrt(r^2 + a^2) + b).
+    M_enc derived from Newton's shell theorem: M_enc = r^2/G * dPhi/dr."""
+    def __init__(self, M, a, b):
+        self.M = M
+        self.a = a
+        self.b = b
+
+    def enclosed_mass(self, r):
+        s = np.sqrt(r**2 + self.a**2)
+        mass = self.M * r**3 / (s * (s + self.b)**2)
+        return mass.to('Msun')
+
+    def _dM_dr(self, r):
+        s = np.sqrt(r**2 + self.a**2)
+        numerator = self.a**2 * (3 * s + self.b) + 2 * s**2 * self.b
+        denominator = s**3 * (s + self.b)**3
+        return self.M * r**2 * numerator / denominator
+
+    def vc(self, r):
+        return np.sqrt(cons.G * self.enclosed_mass(r) / r).to('km/s')
+
+    def Phi(self, r):
+        return (-cons.G * self.M / (np.sqrt(r**2 + self.a**2) + self.b)).to('km**2/s**2')
+
+    def dlnvc_dlnR(self, r):
+        return 0.5 * (self._dM_dr(r) * r / self.enclosed_mass(r) - 1)
 
 
 class OuterHaloPotential(CF.Potential):
@@ -214,13 +249,16 @@ class OuterHaloPotential(CF.Potential):
         mass = 4 * pi * self.rho_mean * (term1 + term2)
         return mass.to('Msun')
 
+    def _dM_dr(self, r):
+        return 4 * pi * self.rho_mean * ((5 * self.R200)**1.5 * r**0.5 + r**2)
+
     def vc(self, r):
         return np.sqrt(cons.G * self.enclosed_mass(r) / r).to('km/s')
 
     def Phi(self, r):
         term1 = (4 / 3) * (5 * self.R200) ** 1.5 * r ** 0.5
         term2 = (1 / 6) * r ** 2
-        return 4 * pi * cons.G * self.rho_mean * (term1 + term2)
+        return (4 * pi * cons.G * self.rho_mean * (term1 + term2)).to('km**2/s**2')
 
     def dlnvc_dlnR(self, r):
         x = r / (5 * self.R200)
@@ -240,122 +278,64 @@ class MiyamotoNagaiPotential:
         return phi.to('km**2/s**2')
 
 
-class CombinedPotential(CF.Potential):
-    """NFW halo + Plummer central galaxy + DK14 outer halo."""
-    def __init__(self, M_vir, r_vir, c_vir, M_gal, a_gal, rho_mean, R200):
-        self.M_vir = M_vir
-        self.r_vir = r_vir
-        self.c_vir = c_vir
-        self.M_gal = M_gal
-        self.a_gal = a_gal
-        self.rho_mean = rho_mean
-        self.R200 = R200
-        self.r_s = self.r_vir / c_vir
-        self.rho_s = M_vir / (4 * pi * self.r_s**3 * (ln(1 + c_vir) - c_vir / (1 + c_vir)))
+class CompositePotential(CF.Potential):
+    """Sum of multiple Potential components.
 
-    def enclosed_mass_nfw(self, r):
-        x = r / self.r_s
-        mass = 4 * pi * self.rho_s * self.r_s**3 * (ln(1 + x) - x / (1 + x))
-        return mass.to('Msun')
-
-    def enclosed_mass_plummer(self, r):
-        return (self.M_gal * r**3 / (r**2 + self.a_gal**2)**(3/2)).to('Msun')
-
-    def enclosed_mass_outer(self, r):
-        term1 = (5 * self.R200) ** 1.5 * (2 / 3) * r ** 1.5
-        term2 = (1 / 3) * r ** 3
-        mass = 4 * pi * self.rho_mean * (term1 + term2)
-        return mass.to('Msun')
+    enclosed_mass, Phi, and dM/dr are additive across components; vc and
+    dlnvc/dlnR are derived from the totals. Each component must implement
+    enclosed_mass(r), Phi(r), and _dM_dr(r).
+    """
+    def __init__(self, components):
+        self.components = list(components)
 
     def enclosed_mass(self, r):
-        return self.enclosed_mass_nfw(r) + self.enclosed_mass_plummer(r) + self.enclosed_mass_outer(r)
+        total = self.components[0].enclosed_mass(r)
+        for c in self.components[1:]:
+            total = total + c.enclosed_mass(r)
+        return total.to('Msun')
+
+    def _dM_dr(self, r):
+        total = self.components[0]._dM_dr(r)
+        for c in self.components[1:]:
+            total = total + c._dM_dr(r)
+        return total
 
     def Phi(self, r):
-        x = r / self.r_s
-        phi_NFW = -4 * pi * cons.G * self.rho_s * self.r_s**2 * ln(1 + x) / x
-        phi_Plummer = -cons.G * self.M_gal / np.sqrt(r**2 + self.a_gal**2)
-        term1 = (4 / 3) * (5 * self.R200) ** 1.5 * r ** 0.5
-        term2 = (1 / 6) * r ** 2
-        phi_Outer = 4 * pi * cons.G * self.rho_mean * (term1 + term2)
-        return (phi_NFW + phi_Plummer + phi_Outer).to('km**2/s**2')
+        total = self.components[0].Phi(r)
+        for c in self.components[1:]:
+            total = total + c.Phi(r)
+        return total.to('km**2/s**2')
 
     def vc(self, r):
         return np.sqrt(cons.G * self.enclosed_mass(r) / r).to('km/s')
 
     def dlnvc_dlnR(self, r):
-        M_nfw_r = self.enclosed_mass_nfw(r)
-        M_plummer_r = self.enclosed_mass_plummer(r)
-        M_outer_r = self.enclosed_mass_outer(r)
-        x = r / self.r_s
-        dM_nfw_dr = 4 * pi * self.rho_s * self.r_s**2 * (x / (1 + x)**2)
-        dM_plummer_dr = self.M_gal * (3 * r**2 * self.a_gal**2 / np.power(r**2 + self.a_gal**2, 2.5))
-        dM_outer_dr = 4 * pi * self.rho_mean * ((5 * self.R200)**1.5 * r**0.5 + r**2)
-        total_mass = M_nfw_r + M_plummer_r + M_outer_r
-        total_derivative = dM_nfw_dr + dM_plummer_dr + dM_outer_dr
-        return 0.5 * (total_derivative * r / total_mass - 1)
+        return 0.5 * (self._dM_dr(r) * r / self.enclosed_mass(r) - 1)
 
 
-class CombinedPotential_using_modified_plummer(CF.Potential):
+class CombinedPotential(CompositePotential):
+    """NFW halo + Plummer central galaxy + DK14 outer halo."""
+    def __init__(self, M_vir, r_vir, c_vir, M_gal, a_gal, rho_mean, R200):
+        nfw = NFWPotential(M_vir, r_vir, c_vir)
+        plummer = PlummerPotential(M_gal, a_gal)
+        outer = OuterHaloPotential(rho_mean, R200)
+        super().__init__([nfw, plummer, outer])
+        # Re-expose component parameters for notebooks/scripts that read them.
+        self.M_vir, self.r_vir, self.c_vir = M_vir, r_vir, c_vir
+        self.M_gal, self.a_gal = M_gal, a_gal
+        self.rho_mean, self.R200 = rho_mean, R200
+        self.r_s, self.rho_s = nfw.r_s, nfw.rho_s
+
+
+class CombinedPotential_using_modified_plummer(CompositePotential):
     """NFW halo + modified-Plummer galaxy (Phi = -GM/(sqrt(r^2+a^2)+b)) +
     DK14 outer halo."""
     def __init__(self, M_vir, r_vir, c_vir, M_gal, a_gal, b_gal, rho_mean, R200):
-        self.M_vir = M_vir
-        self.r_vir = r_vir
-        self.c_vir = c_vir
-        self.M_gal = M_gal
-        self.a_gal = a_gal
-        self.b_gal = b_gal
-        self.rho_mean = rho_mean
-        self.R200 = R200
-        self.r_s = self.r_vir / c_vir
-        self.rho_s = M_vir / (4 * pi * self.r_s**3 * (ln(1 + c_vir) - c_vir / (1 + c_vir)))
-
-    def enclosed_mass_nfw(self, r):
-        x = r / self.r_s
-        mass = 4 * pi * self.rho_s * self.r_s**3 * (ln(1 + x) - x / (1 + x))
-        return mass.to('Msun')
-
-    def enclosed_mass_plummer(self, r):
-        # M_enc derived from Newton's shell theorem: M r^2/G * dPhi/dr.
-        s = np.sqrt(r**2 + self.a_gal**2)
-        mass = self.M_gal * r**3 / (s * (s + self.b_gal)**2)
-        return mass.to('Msun')
-
-    def _dM_plummer_dr(self, r):
-        s = np.sqrt(r**2 + self.a_gal**2)
-        numerator = self.a_gal**2 * (3 * s + self.b_gal) + 2 * s**2 * self.b_gal
-        denominator = s**3 * (s + self.b_gal)**3
-        return self.M_gal * r**2 * numerator / denominator
-
-    def enclosed_mass_outer(self, r):
-        term1 = (5 * self.R200) ** 1.5 * (2 / 3) * r ** 1.5
-        term2 = (1 / 3) * r ** 3
-        mass = 4 * pi * self.rho_mean * (term1 + term2)
-        return mass.to('Msun')
-
-    def enclosed_mass(self, r):
-        return self.enclosed_mass_nfw(r) + self.enclosed_mass_plummer(r) + self.enclosed_mass_outer(r)
-
-    def Phi(self, r):
-        x = r / self.r_s
-        phi_NFW = -4 * pi * cons.G * self.rho_s * self.r_s**2 * ln(1 + x) / x
-        phi_Plummer = -cons.G * self.M_gal / (np.sqrt(r**2 + self.a_gal**2) + self.b_gal)
-        term1 = (4 / 3) * (5 * self.R200) ** 1.5 * r ** 0.5
-        term2 = (1 / 6) * r ** 2
-        phi_Outer = 4 * pi * cons.G * self.rho_mean * (term1 + term2)
-        return (phi_NFW + phi_Plummer + phi_Outer).to('km**2/s**2')
-
-    def vc(self, r):
-        return np.sqrt(cons.G * self.enclosed_mass(r) / r).to('km/s')
-
-    def dlnvc_dlnR(self, r):
-        M_nfw_r = self.enclosed_mass_nfw(r)
-        M_plummer_r = self.enclosed_mass_plummer(r)
-        M_outer_r = self.enclosed_mass_outer(r)
-        x = r / self.r_s
-        dM_nfw_dr = 4 * pi * self.rho_s * self.r_s**2 * (x / (1 + x)**2)
-        dM_plummer_dr = self._dM_plummer_dr(r)
-        dM_outer_dr = 4 * pi * self.rho_mean * ((5 * self.R200)**1.5 * r**0.5 + r**2)
-        total_mass = M_nfw_r + M_plummer_r + M_outer_r
-        total_derivative = dM_nfw_dr + dM_plummer_dr + dM_outer_dr
-        return 0.5 * (total_derivative * r / total_mass - 1)
+        nfw = NFWPotential(M_vir, r_vir, c_vir)
+        plummer = ModifiedPlummerPotential(M_gal, a_gal, b_gal)
+        outer = OuterHaloPotential(rho_mean, R200)
+        super().__init__([nfw, plummer, outer])
+        self.M_vir, self.r_vir, self.c_vir = M_vir, r_vir, c_vir
+        self.M_gal, self.a_gal, self.b_gal = M_gal, a_gal, b_gal
+        self.rho_mean, self.R200 = rho_mean, R200
+        self.r_s, self.rho_s = nfw.r_s, nfw.rho_s

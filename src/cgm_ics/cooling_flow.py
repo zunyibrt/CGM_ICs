@@ -1,9 +1,19 @@
 """
-Module for deriving steady-state cooling flow solutions
+Module for deriving steady-state cooling flow solutions.
+
+LEGACY: this module predates ``solve_ode`` and served as the reference for
+developing it. ``solve_ode`` is the active solver — its ODE algebra is
+gamma-symbolic, while this module hard-codes gamma=5/3 in the sonic-point
+quadratic coefficients. New work should go through ``solve_ode``.
+
+The :class:`Cooling` and :class:`Potential` abstract bases below are still
+in active use as the parent classes for concrete coolings (in
+``cooling_functions``) and potentials (in ``halo_potentials``); those
+concrete classes are passed into ``solve_ode`` via duck typing.
 """
 import numpy as np
-import scipy, scipy.integrate
-from numpy import log as ln, log10 as log, e, pi, cos, sin, arctan2
+import scipy.integrate
+from numpy import log as ln, log10 as log, e, pi
 from astropy import units as un, constants as cons
 
 mu = 0.62    # mean molecular weight
@@ -14,28 +24,28 @@ ne2nH = 1.2  # ratio of electrons to protons
 ######### interface base classes for potential and circular velocity
 class Cooling:
     """interface for cooling function"""
-    
+
     def LAMBDA(self,T,nH):
         """cooling function"""
-        assert(False)
+        raise NotImplementedError
     def f_dlnLambda_dlnT(self,T,nH):
         """logarithmic derivative of cooling function with respect to T"""
-        assert(False)
+        raise NotImplementedError
     def f_dlnLambda_dlnrho(self,T,nH):
         """logarithmic derivative of cooling function with respect to rho"""
-        assert(False)
-        
-class Potential: 
+        raise NotImplementedError
+
+class Potential:
     """interface for gravitational potential"""
-    def vc(self,r): 
+    def vc(self,r):
         """circular velocity"""
-        assert(False)
+        raise NotImplementedError
     def Phi(self,r):
         """gravitational potential"""
-        assert(False)
+        raise NotImplementedError
     def dlnvc_dlnR(self,r):
         """logarithmic derivative of circular velocity"""
-        assert(False)
+        raise NotImplementedError
 
 ######### steady-state equations integration
 def IntegrateFlowEquations(Mdot,T0,rho0,potential,cooling,isInward,R_min,R_max,R_circ=None,max_step=0.1,
@@ -70,7 +80,7 @@ def IntegrateFlowEquations(Mdot,T0,rho0,potential,cooling,isInward,R_min,R_max,R
         M = (v/cs2**0.5).to('')
 
         vc2 = potential.vc(R)**2
-        if R_circ!=None:
+        if R_circ is not None:
             vc2 *= (1-(R_circ/R)**2)
         v_ratio = (vc2/cs2).to('')
 
@@ -114,11 +124,9 @@ def IntegrateFlowEquations(Mdot,T0,rho0,potential,cooling,isInward,R_min,R_max,R
     unbound.terminal = terminalUnbound
     events = sonic_point,(dummy,unbound)[checkUnbound],(lowT,dummy)[issupersonic]
 
-    if isInward: 
-        Rrange =  R_max, R_min
+    if isInward:
         lnRrange = -ln(R_max.value),-ln(R_min.value)
-    else:        
-        Rrange =  R_min, R_max
+    else:
         lnRrange = ln(R_min.value), ln(R_max.value)
 
     initVals = ln(T0/un.K), ln(rho0/(un.g*un.cm**-3))
@@ -208,10 +216,10 @@ def shoot_from_R_circ(potential,cooling,R_circ,Mdot,R_max,v0=1*un.km/un.s,
                                             issupersonic=False,
                                             minT=T_low.value/2.,R_circ=R_circ,max_step=max_step)
         results[T0.value] = res
-        if type(res)==type(''):
+        if isinstance(res, str):
             print(res)
-            break 
-        if pr: 
+            break
+        if pr:
             print('Integrated with log T(R_circ)=%.2f, maximum radius reached %d kpc, stop reason: %s'%(log(T0.to('K').value),res.Rs()[-1].to('kpc').value,res.stopReason()))
         if res.stopReason() in ('sonic point', 'lowT'):
             T_low = T0
@@ -241,8 +249,6 @@ def shoot_from_outer_boundary(potential,cooling,R_circ,Mdot,R_max,
     terminalUnbound: if terminalUnbound=True, integration stops when Bernoulli>0. 
     a single IntegrationResult object 
     """
-    M1 = Mdot/(1*un.Msun/un.yr)
-    Rmax10 = (R_max/(10*un.kpc))
     vc = potential.vc(R_max)
     Tinit = (mu * cons.m_p * vc**2 / (5/3*cons.k_B)).to('K')
     Lambda = cooling.LAMBDA(Tinit,0.1*un.cm**-3)    
@@ -259,10 +265,10 @@ def shoot_from_outer_boundary(potential,cooling,R_circ,Mdot,R_max,
                                             issupersonic=False,
                                             minT=T_stop.value,R_circ=R_circ,max_step=max_step)
         results[T0.value] = res
-        if type(res)==type(''):
+        if isinstance(res, str):
             print(res)
-            break 
-        if pr: 
+            break
+        if pr:
             print('Integrated with log T(R_circ)=%.5f, minimum radius reached %d kpc, stop reason: %s'%(log(T0.to('K').value),res.Rs()[0].to('kpc').value,res.stopReason()))
         if res.stopReason() in ('sonic point', 'lowT'):
             T_low = T0
@@ -319,13 +325,13 @@ def shoot_from_sonic_point(potential,cooling, R_sonic,R_max,R_min, tol=1e-6,max_
         T_sonic_point = (mu*cons.m_p*cs2_sonic_point / (gamma*cons.k_B)).to('K')
         tflow_to_tcool_sonic_point = 10/3. * (1.-x)
         rho_sonic_point = calc_rho_from_tflow2tcool(v_sonic_point, tflow_to_tcool_sonic_point, T_sonic_point, R_sonic, cooling)
-        if rho_sonic_point==False: #no solution found
+        if rho_sonic_point is False: #no solution found
             x_high = x
             continue                
         Mdot = 4*pi*R_sonic**2 * rho_sonic_point * v_sonic_point
         dlnTdlnR1, dlnTdlnR2 = calc_dlnTdlnR_at_sonic_point(R_sonic, x, rho_sonic_point, T_sonic_point, cooling, potential,pr=pr)
 
-        if dlnTdlnR1==None: #no solution
+        if dlnTdlnR1 is None: #no solution
             x_high = x
             continue
 
@@ -336,7 +342,6 @@ def shoot_from_sonic_point(potential,cooling, R_sonic,R_max,R_min, tol=1e-6,max_
             dlnTdlnR = dlnTdlnR2
 
         dlnMdlnR = -1.5*dlnTdlnR + 3 - 5*x - 0.5*dlnTdlnR
-        subsonicToSupersonic = dlnMdlnR<0 #mach number decreases outwards
         dlnvdlnR = -1.5*dlnTdlnR + 3 - 5*x
         dlnrhodlnR = -dlnvdlnR-2
         for isInward in ((False,),(False,True))[calcInwardSolution]:
@@ -392,15 +397,15 @@ class CGMsolution(object):
         self.cooling = cooling
         self.potential = potential
     def Rs(self):
-        pass
+        raise NotImplementedError
     def rhos(self):
-        pass
+        raise NotImplementedError
     def Ts(self):
-        pass
+        raise NotImplementedError
     def vs(self):
-        pass
+        raise NotImplementedError
     def vrs(self):
-        pass 
+        raise NotImplementedError
     def Lambdas(self):
         """values of LAMBDA (cooling function) at all radii of solution"""
         return self.cooling.LAMBDA(self.Ts(),self.nHs())            
@@ -466,9 +471,70 @@ class CGMsolution(object):
         return self.nHs()**2*self.Lambdas()
     def Bernoulli(self):
         """Energy integral of the solution at all radii"""
-        return (self.vs()**2/2. + 
-                self.cs()**2 / (gamma-1) + 
+        return (self.vs()**2/2. +
+                self.cs()**2 / (gamma-1) +
                 self.Phi()).to('km**2/s**2')
+    def sample(self,resolution,Rcirc,avoid_Rs,avoid_zs,Rres2Rcool=1.,theta_function = None):
+        """sample solution in order to create initial conditions for particle hydro simulation"""
+        Mgass = self.Mgas()
+        rs = self.Rs()
+        Rin, Rout = 0*un.kpc, self.Rcool(10*un.Gyr)*Rres2Rcool
+        Rmax = np.interp(20, (self.Rs() / self.cs()).to('Gyr').value,self.Rs().value)*un.kpc
+        print(" %dr(t_cool=10Gyr) = %.0f kpc, r(t_sc=20Gyr) = %.0f kpc"%(Rres2Rcool,Rout.value, Rmax.value))
+        if theta_function is None: theta_function = lambda theta: np.sin(theta)
+        while Rin<Rmax:
+            Min = np.interp(Rin,rs, Mgass)
+            Mout = np.interp(Rout,rs, Mgass)
+            dM = Mout- Min
+            N = int(dM / resolution)
+
+            N2 = 2*N
+            q = np.random.random_sample(N2)
+            sampled_rs     = np.interp(Min+q*dM, Mgass, rs)
+            sampled_phis   = np.random.random_sample(N2) * 2 * np.pi
+            sampled_thetas = np.arccos(np.random.random_sample(N2) * 2 - 1)
+
+            sampled_Rcylinders = sampled_rs*np.sin(sampled_thetas)
+            sampled_zs = sampled_rs*np.cos(sampled_thetas)
+            bad_inds = (sampled_Rcylinders  < avoid_Rs) & (np.abs(sampled_zs) < avoid_zs)
+
+            sampled_rs     = sampled_rs[~bad_inds][:N]
+            sampled_phis   = sampled_phis[~bad_inds][:N]
+            sampled_thetas = sampled_thetas[~bad_inds][:N]
+            sampled_Rcylinders     = sampled_Rcylinders[~bad_inds][:N]
+            sampled_zs     = sampled_zs[~bad_inds][:N]
+            sampled_Ms = np.ones(N) * dM / N
+
+            sampled_xs = sampled_rs*np.sin(sampled_thetas)*np.cos(sampled_phis)
+            sampled_ys = sampled_rs*np.sin(sampled_thetas)*np.sin(sampled_phis)
+
+            sampled_vrs    = np.interp(sampled_rs, rs, -self.vs())
+            sampled_epsilons     = np.interp(sampled_rs, rs, self.internalEnergy())
+
+            vcRcirc = np.interp(Rcirc, self.Rs(), self.vc2())**0.5
+            sampled_vphis = ( (vcRcirc * Rcirc*np.sin(sampled_thetas) / sampled_rs) * (sampled_rs > Rcirc) +
+                              np.interp(sampled_rs,self.Rs(),self.vc2())**0.5        * (sampled_rs < Rcirc) )
+            #assumes v_theta=0
+            sampled_vxs = sampled_vrs * np.sin(sampled_thetas)*np.cos(sampled_phis) - sampled_vphis * np.sin(sampled_phis)
+            sampled_vys = sampled_vrs * np.sin(sampled_thetas)*np.sin(sampled_phis) + sampled_vphis * np.cos(sampled_phis)
+            sampled_vzs = sampled_vrs * np.cos(sampled_thetas)
+            sampled_coords = np.array([sampled_xs,sampled_ys,sampled_zs]).T
+            sampled_vs = np.array([sampled_vxs,sampled_vys,sampled_vzs]).T
+
+            if Rin==0:
+                fin_Ms = sampled_Ms
+                fin_coords = sampled_coords
+                fin_vs = sampled_vs
+                fin_epsilons = sampled_epsilons
+            else:
+                fin_Ms = np.concatenate([fin_Ms,sampled_Ms])
+                fin_coords = np.concatenate([fin_coords,sampled_coords],axis=0)
+                fin_vs = np.concatenate([fin_vs,sampled_vs],axis=0)
+                fin_epsilons = np.concatenate([fin_epsilons,sampled_epsilons])
+            Rin = Rout
+            Rout = min(2**(0.5)*Rout,Rmax)
+            resolution*=3
+        return fin_Ms, fin_coords, fin_vs, fin_epsilons
 
 class IntegrationResult(CGMsolution):
     """
@@ -487,7 +553,7 @@ class IntegrationResult(CGMsolution):
         """radii of solution"""
         Rs = np.e**self.res.t
         if self.isInward: Rs = (Rs**-1.)[::-1]
-        if self.inward_sonic_res !=None:
+        if self.inward_sonic_res is not None:
             Rs_sonic_inward = np.e**-self.inward_sonic_res.t[::-1]
             Rs = np.concatenate([Rs_sonic_inward,Rs])        
         return Rs * un.kpc
@@ -495,7 +561,7 @@ class IntegrationResult(CGMsolution):
         """densities of the solution at all radii"""
         rhos = e**self.res.y[1,:]
         if self.isInward: rhos = rhos[::-1]
-        if self.inward_sonic_res !=None:
+        if self.inward_sonic_res is not None:
             rhos_sonic_inward = e**self.inward_sonic_res.y[1,:][::-1]
             rhos = np.concatenate([rhos_sonic_inward,rhos])                
         return rhos*un.g/un.cm**3    
@@ -503,7 +569,7 @@ class IntegrationResult(CGMsolution):
         """temperature of the solution at all radii"""
         Ts = e**self.res.y[0,:]
         if self.isInward: Ts = Ts[::-1]
-        if self.inward_sonic_res !=None:
+        if self.inward_sonic_res is not None:
             Ts_sonic_inward = e**self.inward_sonic_res.y[0,:][::-1]
             Ts = np.concatenate([Ts_sonic_inward,Ts])        
         Ts = Ts + (Ts<self.T_floor)*self.T_floor
@@ -515,79 +581,17 @@ class IntegrationResult(CGMsolution):
         if 1 in Nevents: return self.eventNames[Nevents.index(1)]
         return self.eventNames[-1]
     def save(self,fn):
-        np.savez(fn, 
-                 rs_in_kpc = self.Rs().value, 
-                 rhos_in_g_to_cm3 = self.rhos().value,
-                 Ts_in_K = self.Ts().value,
-                 vs_in_kms = self.vs())
+        np.savez(fn,
+                 rs_in_kpc = self.Rs().to('kpc').value,
+                 rhos_in_g_to_cm3 = self.rhos().to('g/cm**3').value,
+                 Ts_in_K = self.Ts().to('K').value,
+                 vs_in_kms = self.vs().to('km/s').value)
     def vrs(self):
         """inflow velocity of the solution at all radii"""
         return (self.Mdot / (4*pi*self.Rs()**2*self.rhos())).to('km/s')
     def vs(self):
         return self.vrs()
 
-def sample(self,resolution,Rcirc,avoid_Rs,avoid_zs,Rres2Rcool=1.,theta_function = None):
-    """sample solution in order to create initial conditions for particle hydro simulation"""
-    Mgass = self.Mgas()
-    rs = self.Rs()
-    Rin, Rout = 0*un.kpc, self.Rcool(10*un.Gyr)*Rres2Rcool        
-    Rmax = np.interp(20, (self.Rs() / self.cs()).to('Gyr').value,self.Rs().value)*un.kpc
-    print(" %dr(t_cool=10Gyr) = %.0f kpc, r(t_sc=20Gyr) = %.0f kpc"%(Rres2Rcool,Rout.value, Rmax.value))
-    if theta_function==None: theta_function = lambda theta: np.sin(theta)
-    while Rin<Rmax:            
-        Min = np.interp(Rin,rs, Mgass)
-        Mout = np.interp(Rout,rs, Mgass)
-        dM = Mout- Min
-        N = int(dM / resolution)
-            
-        N2 = 2*N
-        q = np.random.random_sample(N2)
-        sampled_rs     = np.interp(Min+q*dM, Mgass, rs)
-        sampled_phis   = np.random.random_sample(N2) * 2 * np.pi
-        sampled_thetas = np.arccos(np.random.random_sample(N2) * 2 - 1)
-        
-        sampled_Rcylinders = sampled_rs*np.sin(sampled_thetas)
-        sampled_zs = sampled_rs*np.cos(sampled_thetas)
-        bad_inds = (sampled_Rcylinders  < avoid_Rs) & (np.abs(sampled_zs) < avoid_zs)
-        
-        sampled_rs     = sampled_rs[~bad_inds][:N]
-        sampled_phis   = sampled_phis[~bad_inds][:N]
-        sampled_thetas = sampled_thetas[~bad_inds][:N]
-        sampled_Rcylinders     = sampled_Rcylinders[~bad_inds][:N]
-        sampled_zs     = sampled_zs[~bad_inds][:N]
-        sampled_Ms = np.ones(N) * dM / N
-        
-        sampled_xs = sampled_rs*np.sin(sampled_thetas)*np.cos(sampled_phis)
-        sampled_ys = sampled_rs*np.sin(sampled_thetas)*np.sin(sampled_phis)
-
-        sampled_vrs    = np.interp(sampled_rs, rs, -self.vs())
-        sampled_epsilons     = np.interp(sampled_rs, rs, self.internalEnergy())
-        
-        vcRcirc = np.interp(Rcirc, self.Rs(), self.vc2())**0.5
-        sampled_vphis = ( (vcRcirc * Rcirc*np.sin(sampled_thetas) / sampled_rs) * (sampled_rs > Rcirc) + 
-                          np.interp(sampled_rs,self.Rs(),self.vc2())**0.5        * (sampled_rs < Rcirc) )
-        #assumes v_theta=0
-        sampled_vxs = sampled_vrs * np.sin(sampled_thetas)*np.cos(sampled_phis) - sampled_vphis * np.sin(sampled_phis)
-        sampled_vys = sampled_vrs * np.sin(sampled_thetas)*np.sin(sampled_phis) + sampled_vphis * np.cos(sampled_phis)
-        sampled_vzs = sampled_vrs * np.cos(sampled_thetas)
-        sampled_coords = np.array([sampled_xs,sampled_ys,sampled_zs]).T
-        sampled_vs = np.array([sampled_vxs,sampled_vys,sampled_vzs]).T
-        
-        if Rin==0:
-            fin_Ms = sampled_Ms
-            fin_coords = sampled_coords
-            fin_vs = sampled_vs
-            fin_epsilons = sampled_epsilons
-        else:            
-            fin_Ms = np.concatenate([fin_Ms,sampled_Ms])  
-            fin_coords = np.concatenate([fin_coords,sampled_coords],axis=0)  
-            fin_vs = np.concatenate([fin_vs,sampled_vs],axis=0)  
-            fin_epsilons = np.concatenate([fin_epsilons,sampled_epsilons])  
-        Rin = Rout
-        Rout = min(2**(0.5)*Rout,Rmax)
-        resolution*=3
-    return fin_Ms, fin_coords, fin_vs, fin_epsilons
-                
 class Project:
     def __init__(self,Rmin=0.,Rmax = 1000.,ds=0.1):        
         """
