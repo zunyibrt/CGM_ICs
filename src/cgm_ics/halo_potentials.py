@@ -169,7 +169,7 @@ class NFWPotential(CF.Potential):
         mass = 4 * pi * self.rho_s * self.r_s**3 * (ln(1 + x) - x / (1 + x))
         return mass.to('Msun')
 
-    def _dM_dr(self, r):
+    def dM_dr(self, r):
         x = r / self.r_s
         return 4 * pi * self.rho_s * self.r_s**2 * (x / (1 + x)**2)
 
@@ -195,7 +195,7 @@ class PlummerPotential(CF.Potential):
     def enclosed_mass(self, r):
         return (self.M * r**3 / (r**2 + self.a**2)**(3/2)).to('Msun')
 
-    def _dM_dr(self, r):
+    def dM_dr(self, r):
         return self.M * 3 * r**2 * self.a**2 / np.power(r**2 + self.a**2, 2.5)
 
     def vc(self, r):
@@ -221,7 +221,7 @@ class ModifiedPlummerPotential(CF.Potential):
         mass = self.M * r**3 / (s * (s + self.b)**2)
         return mass.to('Msun')
 
-    def _dM_dr(self, r):
+    def dM_dr(self, r):
         s = np.sqrt(r**2 + self.a**2)
         numerator = self.a**2 * (3 * s + self.b) + 2 * s**2 * self.b
         denominator = s**3 * (s + self.b)**3
@@ -234,7 +234,7 @@ class ModifiedPlummerPotential(CF.Potential):
         return (-cons.G * self.M / (np.sqrt(r**2 + self.a**2) + self.b)).to('km**2/s**2')
 
     def dlnvc_dlnR(self, r):
-        return 0.5 * (self._dM_dr(r) * r / self.enclosed_mass(r) - 1)
+        return 0.5 * (self.dM_dr(r) * r / self.enclosed_mass(r) - 1)
 
 
 class OuterHaloPotential(CF.Potential):
@@ -249,7 +249,7 @@ class OuterHaloPotential(CF.Potential):
         mass = 4 * pi * self.rho_mean * (term1 + term2)
         return mass.to('Msun')
 
-    def _dM_dr(self, r):
+    def dM_dr(self, r):
         return 4 * pi * self.rho_mean * ((5 * self.R200)**1.5 * r**0.5 + r**2)
 
     def vc(self, r):
@@ -283,34 +283,35 @@ class CompositePotential(CF.Potential):
 
     enclosed_mass, Phi, and dM/dr are additive across components; vc and
     dlnvc/dlnR are derived from the totals. Each component must implement
-    enclosed_mass(r), Phi(r), and _dM_dr(r).
+    enclosed_mass(r), Phi(r), and dM_dr(r).
     """
     def __init__(self, components):
         self.components = list(components)
 
     def enclosed_mass(self, r):
-        total = self.components[0].enclosed_mass(r)
-        for c in self.components[1:]:
-            total = total + c.enclosed_mass(r)
-        return total.to('Msun')
+        return sum((c.enclosed_mass(r) for c in self.components[1:]),
+                   self.components[0].enclosed_mass(r)).to('Msun')
 
-    def _dM_dr(self, r):
-        total = self.components[0]._dM_dr(r)
-        for c in self.components[1:]:
-            total = total + c._dM_dr(r)
-        return total
+    def dM_dr(self, r):
+        return sum((c.dM_dr(r) for c in self.components[1:]),
+                   self.components[0].dM_dr(r))
 
     def Phi(self, r):
-        total = self.components[0].Phi(r)
-        for c in self.components[1:]:
-            total = total + c.Phi(r)
-        return total.to('km**2/s**2')
+        return sum((c.Phi(r) for c in self.components[1:]),
+                   self.components[0].Phi(r)).to('km**2/s**2')
 
     def vc(self, r):
         return np.sqrt(cons.G * self.enclosed_mass(r) / r).to('km/s')
 
     def dlnvc_dlnR(self, r):
-        return 0.5 * (self._dM_dr(r) * r / self.enclosed_mass(r) - 1)
+        # Single-pass: dlnvc/dlnR is called per ODE RHS evaluation, so avoid
+        # iterating the components twice (once for M_enc, once for dM/dr).
+        M_enc = 0
+        dM_dr = 0
+        for c in self.components:
+            M_enc = M_enc + c.enclosed_mass(r)
+            dM_dr = dM_dr + c.dM_dr(r)
+        return 0.5 * (dM_dr * r / M_enc - 1)
 
 
 class CombinedPotential(CompositePotential):

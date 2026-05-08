@@ -482,6 +482,7 @@ class CGMsolution(object):
         Rmax = np.interp(20, (self.Rs() / self.cs()).to('Gyr').value,self.Rs().value)*un.kpc
         print(" %dr(t_cool=10Gyr) = %.0f kpc, r(t_sc=20Gyr) = %.0f kpc"%(Rres2Rcool,Rout.value, Rmax.value))
         if theta_function is None: theta_function = lambda theta: np.sin(theta)
+        Ms_chunks, coords_chunks, vs_chunks, epsilons_chunks = [], [], [], []
         while Rin<Rmax:
             Min = np.interp(Rin,rs, Mgass)
             Mout = np.interp(Rout,rs, Mgass)
@@ -521,20 +522,17 @@ class CGMsolution(object):
             sampled_coords = np.array([sampled_xs,sampled_ys,sampled_zs]).T
             sampled_vs = np.array([sampled_vxs,sampled_vys,sampled_vzs]).T
 
-            if Rin==0:
-                fin_Ms = sampled_Ms
-                fin_coords = sampled_coords
-                fin_vs = sampled_vs
-                fin_epsilons = sampled_epsilons
-            else:
-                fin_Ms = np.concatenate([fin_Ms,sampled_Ms])
-                fin_coords = np.concatenate([fin_coords,sampled_coords],axis=0)
-                fin_vs = np.concatenate([fin_vs,sampled_vs],axis=0)
-                fin_epsilons = np.concatenate([fin_epsilons,sampled_epsilons])
+            Ms_chunks.append(sampled_Ms)
+            coords_chunks.append(sampled_coords)
+            vs_chunks.append(sampled_vs)
+            epsilons_chunks.append(sampled_epsilons)
             Rin = Rout
             Rout = min(2**(0.5)*Rout,Rmax)
             resolution*=3
-        return fin_Ms, fin_coords, fin_vs, fin_epsilons
+        return (np.concatenate(Ms_chunks),
+                np.concatenate(coords_chunks, axis=0),
+                np.concatenate(vs_chunks, axis=0),
+                np.concatenate(epsilons_chunks))
 
 class IntegrationResult(CGMsolution):
     """
